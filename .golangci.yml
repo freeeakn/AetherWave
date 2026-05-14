@@ -1,0 +1,51 @@
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gofmt
+    - goimports
+    - misspell
+    - revive
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+    check-blank: true
+    exclude-functions:
+      - io.Copy
+      - io.WriteString
+      - (*net.TCPConn).SetWriteDeadline
+      - (*net.Conn).Write
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+        - unused
+    - path: tests/
+      linters:
+        - errcheck
+        - unused
+    - path: pkg/network/mock_*.go
+      linters:
+        - unused
+    - path: pkg/network/discovery_test.go
+      linters:
+        - unused
+        - errcheck
+
+run:
+  timeout: 5m
+  skip-dirs:
+    - vendor
+    - third_party
+  skip-files:
+    - ".*_mock\\.go$"
+
+output:
+  format: colored-line-number 

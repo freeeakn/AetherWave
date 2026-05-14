@@ -1,0 +1,60 @@
+version: '3'
+
+services:
+  node1:
+    build: .
+    container_name: aetherwave-node1
+    ports:
+      - "3000:3000"
+      - "8080:8080"
+    volumes:
+      - node1-data:/app/data
+    environment:
+      - NODE_NAME=Node1
+      - ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    command: --address :3000 --api-address :8080 --name Node1 --key 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+  node2:
+    build: .
+    container_name: aetherwave-node2
+    ports:
+      - "3001:3000"
+      - "8081:8080"
+    volumes:
+      - node2-data:/app/data
+    environment:
+      - NODE_NAME=Node2
+      - ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    command: --address :3000 --api-address :8080 --name Node2 --key 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef --peer node1:3000
+    depends_on:
+      - node1
+
+  node3:
+    build: .
+    container_name: aetherwave-node3
+    ports:
+      - "3002:3000"
+      - "8082:8080"
+    volumes:
+      - node3-data:/app/data
+    environment:
+      - NODE_NAME=Node3
+      - ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    command: --address :3000 --api-address :8080 --name Node3 --key 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef --peer node1:3000
+    depends_on:
+      - node1
+
+  web-ui:
+    build: ./web
+    container_name: aetherwave-web
+    ports:
+      - "8083:80"
+    depends_on:
+      - node1
+      - node2
+      - node3
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:

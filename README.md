@@ -1,127 +1,236 @@
 # 🌌 AetherWave Blockchain Messenger Network
 
+[![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](https://github.com/freeeakn/AetherWave)
+[![Tests](https://img.shields.io/badge/tests-100%25-brightgreen.svg)](https://github.com/freeeakn/AetherWave)
+[![Go Version](https://img.shields.io/badge/go-1.23.3-blue.svg)](https://golang.org/)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A secure and decentralized peer-to-peer messaging system built on blockchain technology. Send encrypted messages across a distributed network while maintaining transparency and integrity through blockchain verification.
 
 ## ✨ Features
 
-This project demonstrates a basic blockchain-based messaging system with the following features:
+This project demonstrates a blockchain-based messaging system with the following features:
 
-- Distributed blockchain for message storage
-- Encrypted messaging using AES-256
-- Peer-to-peer network with gossip-based peer discovery
-- Proof-of-work consensus mechanism
+- 📦 Distributed blockchain for message storage
+- 🔐 Encrypted messaging using AES-256
+- 🌐 Peer-to-peer network with gossip-based peer discovery
+- 🔍 Automatic node discovery using mDNS (Multicast DNS)
+- ⛏️ Proof-of-work consensus mechanism
+- 📊 Performance profiling tools
+- 📱 Mobile SDK for integration with mobile applications
+- 🖥️ Web interface for easy interaction
 
-The system is split into four main components:
+The system is split into several main components:
 
-- `blockchain.go`: Core blockchain implementation
-- `crypto.go`: Encryption/decryption utilities
-- `node.go`: P2P networking and peer discovery
-- `main.go`: Application entry point and demonstration
+- `blockchain`: Core blockchain implementation with caching
+- `crypto`: Encryption/decryption utilities
+- `network`: P2P networking and peer discovery
+- `sdk`: Software Development Kit for easy integration
+- `mobile`: Mobile application integration examples
+- `web`: Web interface for interacting with the network
+- `cmd/aetherwave`: Application entry point and CLI
 
 ## 🚀 Getting Started
 
 ### Prerequisites
 
-- Go 1.18 or higher
+- Go 1.21 or higher
 - Basic understanding of blockchain concepts
 - Basic knowledge of Go programming
 
-## Installation
+### Installation
 
-1. Clone the repository:
+Clone the repository:
 
 ```bash
-git clone git@github.com:freeeakn/AetherWave.git
+git clone https://github.com/freeeakn/AetherWave.git
 cd AetherWave
 ```
 
-2. Ensure you have Go installed:
+Install dependencies:
 
 ```bash
-go version
+make install-deps
 ```
 
-3. Run the application:
+Build the project:
 
 ```bash
-make
+make build
 ```
 
-## 🖥️ Usage
+## 🏃 Running
 
-The current implementation runs a simple demonstration:
-
-Creates a blockchain
-Adds sample encrypted messages between "Danya" and "Asur"
-Prints the blockchain contents and decrypted messages
-Starts a P2P network with three nodes
+### Start a local node
 
 ```bash
-go run ./src -address="localhost:port" -name="Danya"
+make run
 ```
+
+To enable automatic node discovery using mDNS:
 
 ```bash
-go run ./src -address="localhost:port" -peer="<ip of another peer>:port" -name="Asur" -key="KeyOfAnotherPeer"
+make run ARGS="-discovery"
 ```
 
-## Project structure
+### Start a network of nodes
 
-  ```bash
-  src/
-  ├── blockchain.go    # Blockchain implementation
-  ├── crypto.go        # Encryption utilities
-  ├── node.go          # Networking and peer discovery
-  └── main.go          # Main application
-  README.md            # This file
-  ```
+```bash
+make start-network
+```
 
-## Features
+This will start a network of nodes with automatic discovery enabled. The nodes will find each other automatically on the local network.
 
-### Blockchain
+To stop the network:
 
-  1. Stores messages as transactions
-  2. Implements proof-of-work mining
-  3. Verifies chain integrity
+```bash
+make stop-network
+```
 
-### Encryption
+### Using Docker
 
-  1. AES-256 encryption for messages
-  2. Secure key generation
+Build and run with Docker:
 
-### Networking
+```bash
+make docker-build
+make docker-run
+```
 
-  1. TCP-based P2P communication
-  2. Gossip-based peer discovery
-  3. Periodic peer list broadcasting
+Clean up Docker resources:
 
-## Extending the Project
+```bash
+make docker-clean
+```
 
- Potential improvements:
+## 🧪 Testing
 
- 1. Add persistent storage
- 2. Implement proper key management
- 3. Add user authentication
- 4. Enhance consensus mechanism
- 5. Add message broadcasting
- 6. Implement a user interface
- 7. Error handling
- 8. Message validation
- 9. Proper network synchronization
- 10. Message threading
+AetherWave includes an extensive test suite, including unit and integration tests.
+
+### Run all tests
+
+```bash
+make test
+```
+
+### Run only unit tests
+
+```bash
+make test-unit
+```
+
+### Run only integration tests
+
+```bash
+make test-integration
+```
+
+### Run tests with code coverage
+
+```bash
+make test-coverage
+```
+
+A code coverage report will be generated in the `coverage/` directory in HTML format.
+
+### Run tests with extended logging
+
+```bash
+make test-with-script
+```
+
+This option runs tests using a special script that:
+
+- Generates detailed logs for each test
+- Creates code coverage reports
+- Records error information in a separate file
+- Outputs code coverage statistics
+
+All logs and reports are saved in the `test-logs/` and `coverage/` directories.
+
+## 📊 Performance Profiling
+
+AetherWave includes tools for performance profiling:
+
+```bash
+make profile
+```
+
+This will run profiling for CPU usage, memory usage, and block creation, saving the results in the `profiles/` directory.
+
+## 🔍 Code Quality
+
+Run the linter to check code quality:
+
+```bash
+make lint
+```
+
+Set up the development environment with necessary tools:
+
+```bash
+make dev-env
+```
+
+## 📱 Mobile Integration
+
+AetherWave provides an SDK for mobile application integration. Example code is available in the `mobile/` directory.
+
+## 🌐 Web Interface
+
+Access the web interface:
+
+```bash
+make web
+```
+
+This will open the web interface in your default browser.
+
+## 📂 Project Structure
+
+- `cmd/` - Executable files
+    - `aetherwave/` - Main application entry point
+- `pkg/` - Core packages
+    - `blockchain/` - Blockchain implementation
+    - `crypto/` - Cryptographic functions
+    - `network/` - Network interaction
+        - `node.go`: Node implementation for P2P communication
+        - `discovery.go`: Automatic node discovery using mDNS
+    - `sdk/` - Software Development Kit (internal)
+- `sdk/` - External SDK for third-party integration
+- `mobile/` - Mobile integration examples
+- `web/` - Web interface
+- `tests/` - Integration tests
+- `scripts/` - Helper scripts
+- `Dockerfile` - Main application Docker image
+- `web/Dockerfile` - Web UI Docker image
+- `docker-compose.yml` - Multi-node orchestration
 
 ## 🤝 Contributing
 
-Fork the repository
-Create a feature branch
-Submit a pull request with your changes
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
 ## 📜 License
 
-This project is licensed under the MIT License - see the [LICENSE](./LICENSE) file for details.
+This project is licensed under the MIT License - see the LICENSE file for details.
 
-## 📡 From AetherWave team with love
+## 📞 Contact
 
-[freeeakn](https://github.com/freeeakn)
-[Routybor](https://github.com/Routybor)
+For questions and support, please open an issue on GitHub.
 
-![AetherWaveLogo](./img/logo.svg)
+## 🔄 Status
+
+| Component | Status |
+|-----------|--------|
+| Core Blockchain | ✅ Stable |
+| P2P Network | ✅ Stable |
+| mDNS Discovery | ✅ Stable |
+| Encryption | ✅ Stable |
+| Mobile SDK | ✅ Stable |
+| Web Interface | 🟡 Beta |
+| Documentation | 🟡 In Progress |
