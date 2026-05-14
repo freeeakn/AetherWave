@@ -97,9 +97,6 @@ func (l *mockListener) AddConnection(conn net.Conn) {
 	l.connCh <- conn
 }
 
-// Переменная для замены функции net.Listen в тестах
-var netListen = net.Listen
-
 func TestNewNode(t *testing.T) {
 	bc := blockchain.NewBlockchain()
 	bootstrapPeers := []string{"192.168.1.1:8081"}
@@ -378,22 +375,20 @@ func TestHandleChainResponse(t *testing.T) {
 	longerChain := make([]blockchain.Block, 3)
 	longerChain[0] = bc.Chain[0] // Генезис-блок
 
-	// Добавляем два новых блока
-	longerChain[1] = blockchain.Block{
+	// Добавляем два новых блока (майним их, чтобы они удовлетворяли PoW)
+	longerChain[1] = blockchain.SimpleMineBlock(blockchain.Block{
 		Index:     1,
 		Timestamp: time.Now().Unix(),
 		Messages:  []blockchain.Message{{Sender: "Alice", Recipient: "Bob", Content: "Test1", Timestamp: time.Now().Unix()}},
 		PrevHash:  longerChain[0].Hash,
-	}
-	longerChain[1].Hash = blockchain.SimpleCalculateHash(longerChain[1])
+	}, bc.Difficulty)
 
-	longerChain[2] = blockchain.Block{
+	longerChain[2] = blockchain.SimpleMineBlock(blockchain.Block{
 		Index:     2,
 		Timestamp: time.Now().Unix(),
 		Messages:  []blockchain.Message{{Sender: "Bob", Recipient: "Alice", Content: "Test2", Timestamp: time.Now().Unix()}},
 		PrevHash:  longerChain[1].Hash,
-	}
-	longerChain[2].Hash = blockchain.SimpleCalculateHash(longerChain[2])
+	}, bc.Difficulty)
 
 	// Обрабатываем ответ
 	node.handleChainResponse(longerChain)
@@ -418,15 +413,13 @@ func TestHandleNewBlock(t *testing.T) {
 	bc := blockchain.NewBlockchain()
 	node := NewNode("127.0.0.1:8080", bc, nil)
 
-	// Создаем новый блок
-	newBlock := blockchain.Block{
+	// Создаем новый блок (майним его, чтобы он удовлетворял PoW)
+	newBlock := blockchain.SimpleMineBlock(blockchain.Block{
 		Index:     1,
 		Timestamp: time.Now().Unix(),
 		Messages:  []blockchain.Message{{Sender: "Alice", Recipient: "Bob", Content: "Test", Timestamp: time.Now().Unix()}},
 		PrevHash:  bc.Chain[0].Hash,
-		Nonce:     42,
-	}
-	newBlock.Hash = blockchain.SimpleCalculateHash(newBlock)
+	}, bc.Difficulty)
 
 	// Обрабатываем новый блок
 	node.handleNewBlock(newBlock)
@@ -447,14 +440,12 @@ func TestHandleNewBlock(t *testing.T) {
 	}
 
 	// Создаем невалидный блок (неправильный PrevHash)
-	invalidBlock := blockchain.Block{
+	invalidBlock := blockchain.SimpleMineBlock(blockchain.Block{
 		Index:     2,
 		Timestamp: time.Now().Unix(),
 		Messages:  []blockchain.Message{{Sender: "Bob", Recipient: "Alice", Content: "Test2", Timestamp: time.Now().Unix()}},
 		PrevHash:  "invalid_prev_hash",
-		Nonce:     42,
-	}
-	invalidBlock.Hash = blockchain.SimpleCalculateHash(invalidBlock)
+	}, bc.Difficulty)
 
 	// Обрабатываем невалидный блок
 	node.handleNewBlock(invalidBlock)

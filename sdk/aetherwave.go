@@ -2,7 +2,7 @@
 package sdk
 
 import (
-	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -103,10 +103,9 @@ func NewClient(options ClientOptions) *Client {
 
 // SetEncryptionKey устанавливает ключ шифрования для клиента
 func (c *Client) SetEncryptionKey(key string) error {
-	// Проверяем, что ключ является валидной строкой в формате Base64
-	_, err := base64.StdEncoding.DecodeString(key)
-	if err != nil {
-		return fmt.Errorf("неверный формат ключа шифрования: %v", err)
+	keyBytes, err := hex.DecodeString(key)
+	if err != nil || len(keyBytes) != 32 {
+		return fmt.Errorf("invalid hex-encoded 32-byte key: %v", err)
 	}
 
 	c.options.EncryptionKey = key
@@ -278,34 +277,28 @@ func (c *Client) GenerateEncryptionKey() (string, error) {
 // doRequest выполняет HTTP запрос с повторными попытками
 func (c *Client) doRequest(method, endpoint string, body []byte) (*http.Response, error) {
 	url := c.options.NodeURL + endpoint
-	var reqBody io.Reader
 
-	if body != nil {
-		reqBody = strings.NewReader(string(body))
-	}
-
-	// Создаем запрос
-	req, err := http.NewRequest(method, url, reqBody)
-	if err != nil {
-		return nil, err
-	}
-
-	// Устанавливаем заголовки
-	if method == "POST" {
-		req.Header.Set("Content-Type", "application/json")
-	}
-
-	// Выполняем запрос с повторными попытками
-	var resp *http.Response
 	var lastErr error
-
 	for retry := 0; retry <= c.options.MaxRetries; retry++ {
 		if retry > 0 {
-			// Задержка перед повторной попыткой
 			time.Sleep(c.options.RetryDelay)
 		}
 
-		resp, err = c.httpClient.Do(req)
+		var reqBody io.Reader
+		if body != nil {
+			reqBody = strings.NewReader(string(body))
+		}
+
+		req, err := http.NewRequest(method, url, reqBody)
+		if err != nil {
+			return nil, err
+		}
+
+		if method == "POST" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+
+		resp, err := c.httpClient.Do(req)
 		if err == nil {
 			return resp, nil
 		}

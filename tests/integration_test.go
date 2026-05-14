@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -13,28 +14,38 @@ import (
 	"github.com/freeeakn/AetherWave/pkg/network"
 )
 
-// mockListener реализует интерфейс net.Listener для тестирования
-type mockListener struct {
+// labeledPipeConn wraps a net.Conn to return distinct addresses with unique ports
+type labeledPipeConn struct {
+	net.Conn
+	localAddr  net.Addr
+	remoteAddr net.Addr
+}
+
+func (c *labeledPipeConn) LocalAddr() net.Addr  { return c.localAddr }
+func (c *labeledPipeConn) RemoteAddr() net.Addr { return c.remoteAddr }
+
+// pipeListener implements net.Listener using net.Pipe() for in-memory connections
+type pipeListener struct {
 	connCh chan net.Conn
+	addr   net.Addr
 	closed bool
 	mu     sync.Mutex
-	addr   net.Addr
+	index  int
 }
 
-func newMockListener(addr string) *mockListener {
-	return &mockListener{
-		connCh: make(chan net.Conn, 10),
-		addr:   &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 8080},
+func newPipeListener(addr string) *pipeListener {
+	host, portStr, _ := net.SplitHostPort(addr)
+	port, _ := strconv.Atoi(portStr)
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	return &pipeListener{
+		connCh: make(chan net.Conn, 100),
+		addr:   &net.TCPAddr{IP: net.ParseIP(host), Port: port},
 	}
 }
 
-func (l *mockListener) Accept() (net.Conn, error) {
-	l.mu.Lock()
-	if l.closed {
-		l.mu.Unlock()
-		return nil, fmt.Errorf("listener closed")
-	}
-	l.mu.Unlock()
+func (l *pipeListener) Accept() (net.Conn, error) {
 	conn, ok := <-l.connCh
 	if !ok {
 		return nil, fmt.Errorf("listener closed")
@@ -42,7 +53,7 @@ func (l *mockListener) Accept() (net.Conn, error) {
 	return conn, nil
 }
 
-func (l *mockListener) Close() error {
+func (l *pipeListener) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if !l.closed {
@@ -52,289 +63,128 @@ func (l *mockListener) Close() error {
 	return nil
 }
 
-func (l *mockListener) Addr() net.Addr {
-	return l.addr
-}
+func (l *pipeListener) Addr() net.Addr { return l.addr }
 
-func (l *mockListener) AddConnection(conn net.Conn) {
-	l.connCh <- conn
-}
-
-// mockConn реализует интерфейс net.Conn для тестирования
-type mockConn struct {
-	readBuf    chan []byte
-	writeBuf   chan []byte
-	closed     bool
-	mu         sync.Mutex
-	localAddr  net.Addr
-	remoteAddr net.Addr
-}
-
-func newMockConn(localAddr, remoteAddr string) *mockConn {
-	return &mockConn{
-		readBuf:    make(chan []byte, 100),
-		writeBuf:   make(chan []byte, 100),
-		localAddr:  &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 8080},
-		remoteAddr: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 8081},
-	}
-}
-
-func (c *mockConn) Read(b []byte) (n int, err error) {
-	select {
-	case data := <-c.readBuf:
-		n = copy(b, data)
-		return n, nil
-	case <-time.After(100 * time.Millisecond):
-		return 0, fmt.Errorf("timeout")
-	}
-}
-
-func (c *mockConn) Write(b []byte) (n int, err error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closed {
-		return 0, fmt.Errorf("connection closed")
-	}
-	c.writeBuf <- append([]byte{}, b...)
-	return len(b), nil
-}
-
-func (c *mockConn) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.closed = true
-	return nil
-}
-
-func (c *mockConn) LocalAddr() net.Addr                { return c.localAddr }
-func (c *mockConn) RemoteAddr() net.Addr               { return c.remoteAddr }
-func (c *mockConn) SetDeadline(t time.Time) error      { return nil }
-func (c *mockConn) SetReadDeadline(t time.Time) error  { return nil }
-func (c *mockConn) SetWriteDeadline(t time.Time) error { return nil }
-
-// Переменная для замены функции net.Listen в тестах
-var netListen = net.Listen
-
-// Переменная для замены функции dialPeer в тестах
-var dialPeer = func(address string) (net.Conn, error) {
-	return nil, net.ErrClosed
-}
-
-// setupTestNodes создает несколько тестовых узлов для интеграционного тестирования
+// setupTestNodes creates test nodes connected via net.Pipe().
+// Each node gets a pipeListener; ConnectToPeer creates a pipe pair
+// and routes one end to the remote listener's Accept chann el.
 func setupTestNodes(t *testing.T, count int) []*network.Node {
-	// Заменяем функции для тестирования
-	originalNetListen := netListen
+	t.Helper()
+
+	originalListenFn := network.ListenFn
 	originalDialPeer := network.DialPeer
-
-	defer func() {
-		netListen = originalNetListen
+	t.Cleanup(func() {
+		network.ListenFn = originalListenFn
 		network.DialPeer = originalDialPeer
-	}()
+	})
 
-	// Создаем мок-слушатели для каждого узла
-	listeners := make([]*mockListener, count)
+	listenerMap := make(map[string]*pipeListener)
+	nodeAddrs := make([]string, count)
 	for i := 0; i < count; i++ {
-		listeners[i] = newMockListener("127.0.0.1:8080")
+		addr := fmt.Sprintf("127.0.0.1:%d", 8000+i)
+		nodeAddrs[i] = addr
+		listenerMap[addr] = newPipeListener(addr)
 	}
 
-	// Заменяем функцию net.Listen
-	netListenIndex := 0
-	netListen = func(network, address string) (net.Listener, error) {
-		if netListenIndex < len(listeners) {
-			listener := listeners[netListenIndex]
-			netListenIndex++
-			return listener, nil
+	network.ListenFn = func(_, address string) (net.Listener, error) {
+		l, ok := listenerMap[address]
+		if !ok {
+			return nil, fmt.Errorf("no listener for %s", address)
 		}
-		return nil, fmt.Errorf("no more mock listeners")
+		return l, nil
 	}
 
-	// Создаем карту соединений между узлами
-	connections := make(map[string]map[string]*mockConn)
-
-	// Заменяем функцию dialPeer
-	network.DialPeer = func(address string) (net.Conn, error) {
-		for _, conns := range connections {
-			if targetConn, ok := conns[address]; ok {
-				return targetConn, nil
-			}
-		}
-
-		return nil, fmt.Errorf("no mock connection for %s", address)
-	}
-
-	// Создаем узлы
 	nodes := make([]*network.Node, count)
 	for i := 0; i < count; i++ {
 		bc := blockchain.NewBlockchain()
-		address := fmt.Sprintf("127.0.0.1:%d", 8080+i)
+		address := nodeAddrs[i]
 
-		// Создаем список bootstrap-пиров для этого узла
-		bootstrapPeers := make([]string, 0)
-		if i > 0 {
-			// Первый узел не имеет bootstrap-пиров
-			for j := 0; j < i; j++ {
-				bootstrapPeers = append(bootstrapPeers, fmt.Sprintf("127.0.0.1:%d", 8080+j))
-			}
+		var bootstrapPeers []string
+		for j := 0; j < i; j++ {
+			bootstrapPeers = append(bootstrapPeers, nodeAddrs[j])
 		}
 
 		nodes[i] = network.NewNode(address, bc, bootstrapPeers)
+	}
 
-		// Создаем соединения с другими узлами
-		connections[address] = make(map[string]*mockConn)
-		for j := 0; j < i; j++ {
-			peerAddr := fmt.Sprintf("127.0.0.1:%d", 8080+j)
-
-			// Создаем пару соединений между узлами
-			conn1 := newMockConn(address, peerAddr)
-			conn2 := newMockConn(peerAddr, address)
-
-			// Связываем буферы чтения и записи
-			conn1.readBuf = conn2.writeBuf
-			conn2.readBuf = conn1.writeBuf
-
-			// Сохраняем соединения
-			connections[address][peerAddr] = conn1
-			if _, ok := connections[peerAddr]; !ok {
-				connections[peerAddr] = make(map[string]*mockConn)
-			}
-			connections[peerAddr][address] = conn2
+	var pipeCounter int
+	var pipeMu sync.Mutex
+	network.DialPeer = func(address string) (net.Conn, error) {
+		l, ok := listenerMap[address]
+		if !ok {
+			return nil, fmt.Errorf("unknown peer: %s", address)
 		}
+		c1, c2 := net.Pipe()
+		pipeMu.Lock()
+		pipeCounter++
+		portA := 50000 + pipeCounter*2
+		portB := portA + 1
+		pipeMu.Unlock()
+
+		// Use unique port numbers so each pipe connection has distinct address strings
+		wc1 := &labeledPipeConn{
+			Conn:       c1,
+			localAddr:  &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: portA},
+			remoteAddr: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: portB},
+		}
+		wc2 := &labeledPipeConn{
+			Conn:       c2,
+			localAddr:  &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: portB},
+			remoteAddr: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: portA},
+		}
+		l.connCh <- wc2
+		return wc1, nil
 	}
 
-	// Запускаем узлы
-	for i, node := range nodes {
-		go func(n *network.Node, index int) {
-			err := n.Start()
-			if err != nil {
-				t.Errorf("Failed to start node %d: %v", index, err)
+	for _, node := range nodes {
+		go func(n *network.Node) {
+			if err := n.Start(); err != nil {
+				t.Errorf("Failed to start node %s: %v", n.Address, err)
 			}
-		}(node, i)
+		}(node)
 	}
 
-	// Даем время на запуск и установку соединений
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 
 	return nodes
 }
 
 // TestNodeCommunication проверяет обмен сообщениями между узлами
 func TestNodeCommunication(t *testing.T) {
-	// Пропускаем тест, так как он требует доработки мок-соединений
-	t.Skip("Тест требует доработки мок-соединений для корректной передачи данных между узлами")
-
-	// Сохраняем оригинальную функцию net.Listen
-	originalNetListen := netListen
-	defer func() { netListen = originalNetListen }()
-
-	// Создаем мок-слушатели для узлов
-	listener1 := newMockListener("127.0.0.1:8001")
-	listener2 := newMockListener("127.0.0.1:8002")
-
-	// Заменяем функцию net.Listen
-	netListen = func(network, address string) (net.Listener, error) {
-		if address == "127.0.0.1:8001" {
-			return listener1, nil
-		}
-		return listener2, nil
-	}
-
-	// Заменяем функцию DialPeer
-	originalDialPeer := network.DialPeer
-	defer func() { network.DialPeer = originalDialPeer }()
-
-	// Создаем мок-соединения для узлов
-	conn1to2 := newMockConn("127.0.0.1:8001", "127.0.0.1:8002")
-	conn2to1 := newMockConn("127.0.0.1:8002", "127.0.0.1:8001")
-
-	// Настраиваем перенаправление данных между соединениями
-	go func() {
-		for {
-			select {
-			case data, ok := <-conn1to2.writeBuf:
-				if !ok {
-					return
-				}
-				conn2to1.readBuf <- data
-			case data, ok := <-conn2to1.writeBuf:
-				if !ok {
-					return
-				}
-				conn1to2.readBuf <- data
-			}
+	nodes := setupTestNodes(t, 2)
+	defer func() {
+		for _, n := range nodes {
+			n.Stop()
 		}
 	}()
 
-	// Заменяем функцию DialPeer
-	network.DialPeer = func(address string) (net.Conn, error) {
-		if address == "127.0.0.1:8002" {
-			return conn1to2, nil
-		}
-		if address == "127.0.0.1:8001" {
-			return conn2to1, nil
-		}
-		return nil, fmt.Errorf("unknown address: %s", address)
-	}
-
-	// Создаем блокчейны и узлы
-	bc1 := blockchain.NewBlockchain()
-	bc2 := blockchain.NewBlockchain()
-
-	node1 := network.NewNode("127.0.0.1:8001", bc1, []string{"127.0.0.1:8002"})
-	node2 := network.NewNode("127.0.0.1:8002", bc2, []string{"127.0.0.1:8001"})
-
-	// Запускаем узлы
-	err := node1.Start()
-	if err != nil {
-		t.Fatalf("Failed to start node1: %v", err)
-	}
-	defer node1.Stop()
-
-	err = node2.Start()
-	if err != nil {
-		t.Fatalf("Failed to start node2: %v", err)
-	}
-	defer node2.Stop()
-
-	// Даем время на установление соединения
-	time.Sleep(100 * time.Millisecond)
-
-	// Генерируем ключ для шифрования
 	key, err := crypto.GenerateKey()
 	if err != nil {
 		t.Fatalf("Failed to generate key: %v", err)
 	}
 
-	// Добавляем сообщение в первый узел
-	err = bc1.AddMessage("Alice", "Bob", "Hello from node1!", key)
+	err = nodes[0].Blockchain.AddMessage("Alice", "Bob", "Hello from node1!", key)
 	if err != nil {
 		t.Fatalf("Failed to add message to node1: %v", err)
 	}
 
-	// Получаем последний блок из первого узла
-	lastBlock := bc1.GetLastBlock()
+	lastBlock := nodes[0].Blockchain.GetLastBlock()
 
-	// Отправляем блок второму узлу
-	node1.BroadcastBlock(lastBlock)
+	nodes[0].BroadcastBlock(lastBlock)
+	time.Sleep(500 * time.Millisecond)
 
-	// Даем время на обработку блока
-	time.Sleep(300 * time.Millisecond)
-
-	// Проверяем, что блок был добавлен во второй узел
-	lastBlock2 := bc2.GetLastBlock()
+	lastBlock2 := nodes[1].Blockchain.GetLastBlock()
 	if lastBlock2.Index != lastBlock.Index {
-		t.Errorf("Expected node2 to have block with index %d, got %d", lastBlock.Index, lastBlock2.Index)
+		t.Errorf("Expected node2 to have block index %d, got %d", lastBlock.Index, lastBlock2.Index)
 	}
-
 	if lastBlock2.Hash != lastBlock.Hash {
-		t.Errorf("Expected node2 to have block with hash %s, got %s", lastBlock.Hash, lastBlock2.Hash)
+		t.Errorf("Expected node2 to have hash %s, got %s", lastBlock.Hash, lastBlock2.Hash)
 	}
 
-	// Проверяем, что сообщение можно прочитать из второго узла
-	messages := bc2.ReadMessages("Bob", key)
+	messages := nodes[1].Blockchain.ReadMessages("Bob", key)
 	if len(messages) != 1 {
-		t.Errorf("Expected to read 1 message from node2, got %d", len(messages))
+		t.Errorf("Expected 1 message from node2, got %d", len(messages))
 	}
-
 	if len(messages) > 0 && !contains(messages[0], "Hello from node1!") {
 		t.Errorf("Expected message to contain 'Hello from node1!', got %s", messages[0])
 	}
@@ -342,185 +192,58 @@ func TestNodeCommunication(t *testing.T) {
 
 // TestBlockchainSynchronization проверяет синхронизацию блокчейна между узлами
 func TestBlockchainSynchronization(t *testing.T) {
-	// Пропускаем тест, так как он требует доработки мок-соединений
-	t.Skip("Тест требует доработки мок-соединений для корректной передачи данных между узлами")
-
-	// Сохраняем оригинальную функцию net.Listen
-	originalNetListen := netListen
-	defer func() { netListen = originalNetListen }()
-
-	// Создаем мок-слушатели для узлов
-	listener1 := newMockListener("127.0.0.1:8001")
-	listener2 := newMockListener("127.0.0.1:8002")
-	listener3 := newMockListener("127.0.0.1:8003")
-
-	// Заменяем функцию net.Listen
-	netListen = func(network, address string) (net.Listener, error) {
-		if address == "127.0.0.1:8001" {
-			return listener1, nil
-		}
-		if address == "127.0.0.1:8002" {
-			return listener2, nil
-		}
-		return listener3, nil
-	}
-
-	// Заменяем функцию DialPeer
-	originalDialPeer := network.DialPeer
-	defer func() { network.DialPeer = originalDialPeer }()
-
-	// Создаем мок-соединения для узлов
-	conn1to2 := newMockConn("127.0.0.1:8001", "127.0.0.1:8002")
-	conn2to1 := newMockConn("127.0.0.1:8002", "127.0.0.1:8001")
-	conn1to3 := newMockConn("127.0.0.1:8001", "127.0.0.1:8003")
-	conn3to1 := newMockConn("127.0.0.1:8003", "127.0.0.1:8001")
-	conn2to3 := newMockConn("127.0.0.1:8002", "127.0.0.1:8003")
-	conn3to2 := newMockConn("127.0.0.1:8003", "127.0.0.1:8002")
-
-	// Настраиваем перенаправление данных между соединениями
-	go func() {
-		for {
-			select {
-			case data, ok := <-conn1to2.writeBuf:
-				if !ok {
-					return
-				}
-				conn2to1.readBuf <- data
-			case data, ok := <-conn2to1.writeBuf:
-				if !ok {
-					return
-				}
-				conn1to2.readBuf <- data
-			case data, ok := <-conn1to3.writeBuf:
-				if !ok {
-					return
-				}
-				conn3to1.readBuf <- data
-			case data, ok := <-conn3to1.writeBuf:
-				if !ok {
-					return
-				}
-				conn1to3.readBuf <- data
-			case data, ok := <-conn2to3.writeBuf:
-				if !ok {
-					return
-				}
-				conn3to2.readBuf <- data
-			case data, ok := <-conn3to2.writeBuf:
-				if !ok {
-					return
-				}
-				conn2to3.readBuf <- data
-			}
+	nodes := setupTestNodes(t, 3)
+	defer func() {
+		for _, n := range nodes {
+			n.Stop()
 		}
 	}()
 
-	// Заменяем функцию DialPeer
-	network.DialPeer = func(address string) (net.Conn, error) {
-		if address == "127.0.0.1:8001" {
-			return conn3to1, nil
-		}
-		if address == "127.0.0.1:8002" {
-			return conn1to2, nil
-		}
-		if address == "127.0.0.1:8003" {
-			return conn2to3, nil
-		}
-		return nil, fmt.Errorf("unknown address: %s", address)
-	}
-
-	// Создаем блокчейны и узлы
-	bc1 := blockchain.NewBlockchain()
-	bc2 := blockchain.NewBlockchain()
-	bc3 := blockchain.NewBlockchain()
-
-	node1 := network.NewNode("127.0.0.1:8001", bc1, []string{"127.0.0.1:8002"})
-	node2 := network.NewNode("127.0.0.1:8002", bc2, []string{"127.0.0.1:8003"})
-	node3 := network.NewNode("127.0.0.1:8003", bc3, []string{"127.0.0.1:8001"})
-
-	// Запускаем узлы
-	err := node1.Start()
-	if err != nil {
-		t.Fatalf("Failed to start node1: %v", err)
-	}
-	defer node1.Stop()
-
-	err = node2.Start()
-	if err != nil {
-		t.Fatalf("Failed to start node2: %v", err)
-	}
-	defer node2.Stop()
-
-	err = node3.Start()
-	if err != nil {
-		t.Fatalf("Failed to start node3: %v", err)
-	}
-	defer node3.Stop()
-
-	// Даем время на установление соединения
-	time.Sleep(300 * time.Millisecond)
-
-	// Генерируем ключ для шифрования
 	key, err := crypto.GenerateKey()
 	if err != nil {
 		t.Fatalf("Failed to generate key: %v", err)
 	}
 
-	// Добавляем несколько сообщений в первый узел
 	for i := 0; i < 3; i++ {
-		err = bc1.AddMessage("Alice", "Bob", fmt.Sprintf("Message %d", i), key)
+		err = nodes[0].Blockchain.AddMessage("Alice", "Bob", fmt.Sprintf("Message %d", i), key)
 		if err != nil {
-			t.Fatalf("Failed to add message %d to node1: %v", i, err)
+			t.Fatalf("Failed to add message %d: %v", i, err)
 		}
 	}
 
-	// Отправляем запрос на синхронизацию цепочки от узла 3 к узлу 1
-	// Используем неэкспортированный метод requestChainFromPeers
-	// Это требует изменения в коде или создания обертки для тестирования
-	// Для тестов можно использовать другой подход, например, напрямую вызвать requestChain
-	node3.BroadcastBlock(bc3.GetLastBlock()) // Вместо requestChainFromPeers используем другой подход
+	lastBlock := nodes[0].Blockchain.GetLastBlock()
+	nodes[0].BroadcastBlock(lastBlock)
 
-	// Даем время на синхронизацию
 	time.Sleep(500 * time.Millisecond)
 
-	// Проверяем, что все узлы имеют одинаковую длину цепочки
-	if len(bc1.GetChain()) != len(bc3.GetChain()) {
-		t.Errorf("Expected node3 to have the same chain length as node1: %d vs %d", len(bc1.GetChain()), len(bc3.GetChain()))
+	if nodes[1].Blockchain.GetLastBlock().Index != nodes[0].Blockchain.GetLastBlock().Index {
+		t.Errorf("Expected node2 chain length %d, got %d",
+			nodes[0].Blockchain.GetLastBlock().Index, nodes[1].Blockchain.GetLastBlock().Index)
+	}
+	if nodes[2].Blockchain.GetLastBlock().Hash != nodes[0].Blockchain.GetLastBlock().Hash {
+		t.Errorf("Expected node3 to have same last block hash as node1")
 	}
 
-	// Проверяем, что последний блок одинаковый у всех узлов
-	lastBlock1 := bc1.GetLastBlock()
-	lastBlock3 := bc3.GetLastBlock()
-
-	if lastBlock1.Hash != lastBlock3.Hash {
-		t.Errorf("Expected node3 to have the same last block hash as node1: %s vs %s", lastBlock1.Hash, lastBlock3.Hash)
-	}
-
-	// Проверяем, что сообщения можно прочитать из третьего узла
-	messages := bc3.ReadMessages("Bob", key)
+	messages := nodes[2].Blockchain.ReadMessages("Bob", key)
 	if len(messages) != 3 {
-		t.Errorf("Expected to read 3 messages from node3, got %d", len(messages))
+		t.Errorf("Expected 3 messages from node3, got %d", len(messages))
 	}
 }
 
 // TestEndToEndMessaging проверяет полный цикл отправки и получения сообщений
 func TestEndToEndMessaging(t *testing.T) {
-	// Настраиваем логирование
 	logger, cleanup := SetupTestLogging(t)
 	defer cleanup()
 
 	logger.Log("Starting end-to-end messaging test")
 
-	// Создаем блокчейн
 	bc := blockchain.NewBlockchain()
 	logger.Log("Created blockchain instance")
 
-	// Генерируем ключ для шифрования
 	key, err := crypto.GenerateKey()
 	AssertNoError(t, err, "Failed to generate key")
 	logger.Log("Generated encryption key")
 
-	// Добавляем несколько сообщений
 	messages := []struct {
 		sender    string
 		recipient string
@@ -540,13 +263,11 @@ func TestEndToEndMessaging(t *testing.T) {
 		logger.Log("Added message %d: %s -> %s", i, msg.sender, msg.recipient)
 	}
 
-	// Проверяем, что блокчейн содержит правильное количество блоков
-	expectedBlockCount := len(messages) + 1 // +1 для генезис-блока
+	expectedBlockCount := len(messages) + 1
 	actualBlockCount := len(bc.GetChain())
 	AssertEqual(t, expectedBlockCount, actualBlockCount, "Incorrect blockchain length")
 	logger.Log("Blockchain contains %d blocks (including genesis block)", actualBlockCount)
 
-	// Проверяем, что все сообщения можно прочитать
 	bobMessages := bc.ReadMessages("Bob", key)
 	AssertEqual(t, 2, len(bobMessages), "Incorrect number of messages for Bob")
 	logger.Log("Bob has %d messages", len(bobMessages))
@@ -559,7 +280,6 @@ func TestEndToEndMessaging(t *testing.T) {
 	AssertEqual(t, 1, len(charlieMessages), "Incorrect number of messages for Charlie")
 	logger.Log("Charlie has %d messages", len(charlieMessages))
 
-	// Проверяем содержимое сообщений
 	logger.Log("Verifying message contents")
 	for i, msg := range bobMessages {
 		if !contains(msg, "Hello, Bob!") && !contains(msg, "I'm fine, thanks!") {
@@ -588,16 +308,14 @@ func TestEndToEndMessaging(t *testing.T) {
 		}
 	}
 
-	// Проверяем, что сообщения зашифрованы в блокчейне
 	logger.Log("Verifying message encryption")
 	for i, block := range bc.GetChain() {
 		for j, msg := range block.Messages {
 			if msg.Content == "" {
 				logger.Log("Block %d, message %d: empty content (likely genesis block)", i, j)
-				continue // Пропускаем пустые сообщения (например, в генезис-блоке)
+				continue
 			}
 
-			// Проверяем, что содержимое сообщения - это шестнадцатеричная строка
 			_, err := hex.DecodeString(msg.Content)
 			if err != nil {
 				t.Errorf("Message content is not a valid hex string: %v", err)
@@ -606,7 +324,6 @@ func TestEndToEndMessaging(t *testing.T) {
 				logger.Log("Block %d, message %d: content is a valid hex string", i, j)
 			}
 
-			// Проверяем, что содержимое сообщения не совпадает с исходным текстом
 			for k, origMsg := range messages {
 				if msg.Sender == origMsg.sender && msg.Recipient == origMsg.recipient && msg.Content == origMsg.content {
 					t.Errorf("Message content is not encrypted: %s", msg.Content)
@@ -619,7 +336,11 @@ func TestEndToEndMessaging(t *testing.T) {
 	logger.Log("End-to-end messaging test completed successfully")
 }
 
-// Вспомогательная функция для проверки, содержит ли строка подстроку
 func contains(s, substr string) bool {
-	return s != "" && s != substr && len(s) >= len(substr) && s[len(s)-len(substr):] == substr
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }

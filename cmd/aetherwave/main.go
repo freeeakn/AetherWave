@@ -2,9 +2,13 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -16,16 +20,29 @@ import (
 	"github.com/freeeakn/AetherWave/pkg/network"
 )
 
+// Build-time variables set via -ldflags in goreleaser
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
-	// Парсинг аргументов командной строки
-	address := flag.String("address", ":3000", "Node address (e.g., :3000 or 192.168.1.100:3000)")
-	peer := flag.String("peer", "", "Initial peer address to connect to (e.g., 192.168.1.101:3000)")
+	address := flag.String("address", ":3000", "Node P2P address (e.g., :3000 or 192.168.1.100:3000)")
+	apiAddress := flag.String("api-address", ":8080", "HTTP API address (e.g., :8080)")
+	peer := flag.String("peer", "", "Initial peer address to connect to")
 	name := flag.String("name", "User", "Your username")
 	keyStr := flag.String("key", "", "Shared encryption key (hex-encoded, 32 bytes); if empty, one will be generated")
+	chainFile := flag.String("chain-file", "", "Path to persist blockchain (JSON); empty means no persistence")
 	enableDiscovery := flag.Bool("discovery", false, "Enable automatic node discovery using mDNS")
+	showVersion := flag.Bool("version", false, "Show version information")
 	flag.Parse()
 
-	// Инициализация ключа шифрования
+	if *showVersion {
+		fmt.Printf("AetherWave v%s (commit: %s, built: %s)\n", version, commit, date)
+		return
+	}
+
 	var key []byte
 	var err error
 	if *keyStr != "" {
@@ -43,28 +60,34 @@ func main() {
 		fmt.Printf("Generated key (share this with peers): %s\n", hex.EncodeToString(key))
 	}
 
-	// Инициализация блокчейна и узла
 	var bootstrapPeers []string
 	if *peer != "" {
 		bootstrapPeers = []string{*peer}
 	}
 
 	bc := blockchain.NewBlockchain()
-	node := network.NewNode(*address, bc, bootstrapPeers)
 
-	// Включаем автоматическое обнаружение узлов, если указан флаг
+	// Загружаем блокчейн с диска, если указан chain-file
+	if *chainFile != "" {
+		if err := bc.LoadFromFile(*chainFile); err != nil {
+			fmt.Printf("Warning: failed to load chain from %s: %v\n", *chainFile, err)
+		}
+	}
+
+	node := network.NewNode(*address, bc, bootstrapPeers)
+	node.NetworkKey = key
+	node.ChainFile = *chainFile
+
 	if *enableDiscovery {
-		fmt.Println("Включено автоматическое обнаружение узлов через mDNS")
+		fmt.Println("mDNS discovery enabled")
 		node.EnableDiscovery()
 	}
 
-	// Запуск узла
 	if err := node.Start(); err != nil {
 		fmt.Printf("Failed to start node: %v\n", err)
 		return
 	}
 
-	// Подключение к начальному пиру
 	if *peer != "" {
 		time.Sleep(1 * time.Second)
 		if err := node.ConnectToPeer(*peer); err != nil {
@@ -77,29 +100,31 @@ func main() {
 	fmt.Println("Waiting for network stabilization (5 seconds)...")
 	time.Sleep(5 * time.Second)
 
-	// Обработка сигналов для корректного завершения
+	httpServer := startAPIServer(*apiAddress, bc, node, key, name)
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Printf("PANIC in signal handler: %v\n", r)
+			}
+		}()
 		<-sigChan
 		fmt.Println("\nShutting down...")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		httpServer.Shutdown(ctx)
 		node.Stop()
-		os.Exit(0)
 	}()
 
-	// Интерактивный режим
-	fmt.Printf("Welcome, %s! Running on %s\n", *name, *address)
+	fmt.Printf("Welcome, %s! Running on %s (HTTP API on %s)\n", *name, *address, *apiAddress)
 	fmt.Println("Commands: send <recipient> <message>, read, peers, blocks, debug, discovery, quit")
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Print("> ")
 		if !scanner.Scan() {
-			if err := scanner.Err(); err != nil {
-				fmt.Printf("Scanner error: %v\n", err)
-			} else {
-				fmt.Println("Input closed (EOF)")
-			}
 			return
 		}
 		input := strings.TrimSpace(scanner.Text())
@@ -123,6 +148,9 @@ func main() {
 			handleDiscoveryCommand(node, parts)
 		case "quit":
 			fmt.Println("Shutting down...")
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			httpServer.Shutdown(ctx)
 			node.Stop()
 			return
 		default:
@@ -131,7 +159,155 @@ func main() {
 	}
 }
 
-// handleSendCommand обрабатывает команду отправки сообщения
+func startAPIServer(addr string, bc *blockchain.Blockchain, node *network.Node, key []byte, name *string) *http.Server {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/api/message", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			Sender    string `json:"sender"`
+			Recipient string `json:"recipient"`
+			Content   string `json:"content"`
+			Key       string `json:"key"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+			return
+		}
+		if req.Key != "" {
+			reqKey, err := hex.DecodeString(req.Key)
+			if err != nil || len(reqKey) != 32 {
+				http.Error(w, `{"error":"invalid key"}`, http.StatusBadRequest)
+				return
+			}
+			if err := bc.AddMessage(req.Sender, req.Recipient, req.Content, reqKey); err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+				return
+			}
+		} else {
+			if err := bc.AddMessage(req.Sender, req.Recipient, req.Content, key); err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+				return
+			}
+		}
+		lastBlock := bc.GetLastBlock()
+		go node.BroadcastBlockWithRetry(lastBlock)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "block": lastBlock})
+	})
+
+	mux.HandleFunc("/api/messages", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		username := r.URL.Query().Get("username")
+		keyStr := r.URL.Query().Get("key")
+		if username == "" {
+			http.Error(w, `{"error":"username required"}`, http.StatusBadRequest)
+			return
+		}
+		var msgKey []byte
+		if keyStr != "" {
+			var err error
+			msgKey, err = hex.DecodeString(keyStr)
+			if err != nil || len(msgKey) != 32 {
+				http.Error(w, `{"error":"invalid key"}`, http.StatusBadRequest)
+				return
+			}
+		} else {
+			msgKey = key
+		}
+		msgs := bc.ReadMessages(username, msgKey)
+		var result []map[string]interface{}
+		for _, m := range msgs {
+			result = append(result, map[string]interface{}{"message": m})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(result)
+	})
+
+	mux.HandleFunc("/api/blockchain", func(w http.ResponseWriter, r *http.Request) {
+		chain := bc.GetChain()
+		msgCount := 0
+		for _, b := range chain {
+			msgCount += len(b.Messages)
+		}
+		info := map[string]interface{}{
+			"blockCount":   len(chain),
+			"messageCount": msgCount,
+			"difficulty":   bc.Difficulty,
+			"lastBlock":    chain[len(chain)-1],
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(info)
+	})
+
+	mux.HandleFunc("/api/peers", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			var req struct {
+				Address string `json:"address"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+				return
+			}
+			node.ConnectToPeer(req.Address)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]bool{"success": true})
+			return
+		}
+		peers := node.GetPeers()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(peers)
+	})
+
+	mux.HandleFunc("/api/generate-key", func(w http.ResponseWriter, r *http.Request) {
+		newKey, err := crypto.GenerateKey()
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"key": hex.EncodeToString(newKey)})
+	})
+
+	server := &http.Server{
+		Addr:    addr,
+		Handler: withCORS(mux),
+	}
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("PANIC in HTTP server: %v\n", r)
+			}
+		}()
+		fmt.Printf("HTTP API server starting on %s\n", addr)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("HTTP API server error: %v\n", err)
+		}
+	}()
+
+	return server
+}
+
+func withCORS(handler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})
+}
+
 func handleSendCommand(parts []string, name string, bc *blockchain.Blockchain, node *network.Node, key []byte) {
 	fmt.Println("Processing 'send' command...")
 	if len(parts) < 3 {
@@ -149,11 +325,15 @@ func handleSendCommand(parts []string, name string, bc *blockchain.Blockchain, n
 	miningDuration := time.Since(startTime)
 	fmt.Printf("Message sent and block mined in %v\n", miningDuration)
 
-	// Рассылка нового блока
 	lastBlock := bc.GetLastBlock()
 
 	broadcastChan := make(chan bool, 1)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Printf("PANIC in broadcast: %v\n", r)
+			}
+		}()
 		node.BroadcastBlockWithRetry(lastBlock)
 		broadcastChan <- true
 	}()
@@ -166,7 +346,6 @@ func handleSendCommand(parts []string, name string, bc *blockchain.Blockchain, n
 	}
 }
 
-// handleReadCommand обрабатывает команду чтения сообщений
 func handleReadCommand(name string, bc *blockchain.Blockchain, key []byte) {
 	fmt.Println("Processing 'read' command...")
 	messages := bc.ReadMessages(name, key)
@@ -182,7 +361,6 @@ func handleReadCommand(name string, bc *blockchain.Blockchain, key []byte) {
 	fmt.Println("Read command completed")
 }
 
-// handlePeersCommand обрабатывает команду просмотра пиров
 func handlePeersCommand(node *network.Node) {
 	fmt.Println("Processing 'peers' command...")
 	peers := node.GetPeers()
@@ -198,7 +376,6 @@ func handlePeersCommand(node *network.Node) {
 	fmt.Println("Peers command completed")
 }
 
-// handleBlocksCommand обрабатывает команду просмотра блоков
 func handleBlocksCommand(bc *blockchain.Blockchain) {
 	fmt.Println("Processing 'blocks' command...")
 	chain := bc.GetChain()
@@ -225,7 +402,6 @@ func handleBlocksCommand(bc *blockchain.Blockchain) {
 	fmt.Println("Blocks command completed")
 }
 
-// handleDebugCommand обрабатывает команду отладки
 func handleDebugCommand(address string, bc *blockchain.Blockchain, node *network.Node) {
 	fmt.Println("Processing 'debug' command...")
 	peers := node.GetPeers()
@@ -255,7 +431,6 @@ func handleDebugCommand(address string, bc *blockchain.Blockchain, node *network
 	fmt.Println("Debug command completed")
 }
 
-// handleDiscoveryCommand обрабатывает команду управления обнаружением узлов
 func handleDiscoveryCommand(node *network.Node, parts []string) {
 	fmt.Println("Processing 'discovery' command...")
 
@@ -263,20 +438,19 @@ func handleDiscoveryCommand(node *network.Node, parts []string) {
 		switch parts[1] {
 		case "on":
 			node.EnableDiscovery()
-			fmt.Println("Автоматическое обнаружение узлов включено")
+			fmt.Println("mDNS discovery enabled")
 		case "off":
 			node.DisableDiscovery()
-			fmt.Println("Автоматическое обнаружение узлов выключено")
+			fmt.Println("mDNS discovery disabled")
 		default:
-			fmt.Println("Неизвестная подкоманда. Доступные: on, off, list")
+			fmt.Println("Unknown subcommand. Available: on, off")
 		}
 	}
 
-	// Выводим список обнаруженных узлов
-	fmt.Println("Узлы, обнаруженные через mDNS:")
+	fmt.Println("Discovered nodes:")
 	discoveredNodes := node.GetDiscoveredNodes()
 	if len(discoveredNodes) == 0 {
-		fmt.Println("  Узлы не обнаружены")
+		fmt.Println("  No nodes discovered")
 	} else {
 		for _, addr := range discoveredNodes {
 			fmt.Printf("  %s\n", addr)

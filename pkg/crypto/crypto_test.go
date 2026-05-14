@@ -77,15 +77,10 @@ func TestEncryptWithWrongKey(t *testing.T) {
 		t.Fatalf("Failed to encrypt message: %v", err)
 	}
 
-	// Пытаемся дешифровать с другим ключом
-	decrypted, err := DecryptMessage(encrypted, key2)
-	if err != nil {
-		t.Fatalf("Failed to decrypt message with wrong key: %v", err)
-	}
-
-	// Проверяем, что дешифрованное сообщение отличается от исходного
-	if decrypted == message {
-		t.Errorf("Message decrypted with wrong key matches original message, which should be extremely unlikely")
+	// Пытаемся дешифровать с другим ключом (должно вернуть ошибку аутентификации)
+	_, err = DecryptMessage(encrypted, key2)
+	if err == nil {
+		t.Errorf("Expected error when decrypting with wrong key (GCM authentication should fail), but got none")
 	}
 }
 
@@ -124,7 +119,6 @@ func TestDecryptInvalidData(t *testing.T) {
 		t.Fatalf("Failed to generate key: %v", err)
 	}
 
-	// Тестовые случаи с невалидными данными
 	testCases := []struct {
 		name        string
 		ciphertext  []byte
@@ -132,7 +126,7 @@ func TestDecryptInvalidData(t *testing.T) {
 	}{
 		{"Empty data", []byte{}, true},
 		{"Too short data", []byte{1, 2, 3}, true},
-		{"Random data", []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20}, false},
+		{"Random data", []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20}, true},
 	}
 
 	for _, tc := range testCases {

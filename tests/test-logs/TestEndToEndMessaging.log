@@ -1,26 +1,26 @@
-[2025-03-03 00:30:14.330] [TestEndToEndMessaging] [integration_test.go:512] Starting end-to-end messaging test
-[2025-03-03 00:30:14.330] [TestEndToEndMessaging] [integration_test.go:516] Created blockchain instance
-[2025-03-03 00:30:14.330] [TestEndToEndMessaging] [integration_test.go:521] Generated encryption key
-[2025-03-03 00:30:14.330] [TestEndToEndMessaging] [integration_test.go:536] Adding 5 messages to blockchain
-[2025-03-03 00:30:14.363] [TestEndToEndMessaging] [integration_test.go:540] Added message 0: Alice -> Bob
-[2025-03-03 00:30:14.367] [TestEndToEndMessaging] [integration_test.go:540] Added message 1: Bob -> Alice
-[2025-03-03 00:30:14.437] [TestEndToEndMessaging] [integration_test.go:540] Added message 2: Alice -> Bob
-[2025-03-03 00:30:14.470] [TestEndToEndMessaging] [integration_test.go:540] Added message 3: Charlie -> Alice
-[2025-03-03 00:30:14.550] [TestEndToEndMessaging] [integration_test.go:540] Added message 4: Alice -> Charlie
-[2025-03-03 00:30:14.551] [TestEndToEndMessaging] [integration_test.go:547] Blockchain contains 6 blocks (including genesis block)
-[2025-03-03 00:30:14.551] [TestEndToEndMessaging] [integration_test.go:552] Bob has 2 messages
-[2025-03-03 00:30:14.551] [TestEndToEndMessaging] [integration_test.go:556] Alice has 2 messages
-[2025-03-03 00:30:14.551] [TestEndToEndMessaging] [integration_test.go:560] Charlie has 1 messages
-[2025-03-03 00:30:14.551] [TestEndToEndMessaging] [integration_test.go:563] Verifying message contents
-[2025-03-03 00:30:14.551] [TestEndToEndMessaging] [integration_test.go:569] Bob's message 0 has expected content
-[2025-03-03 00:30:14.551] [TestEndToEndMessaging] [integration_test.go:569] Bob's message 1 has expected content
-[2025-03-03 00:30:14.551] [TestEndToEndMessaging] [integration_test.go:578] Alice's message 0 has expected content
-[2025-03-03 00:30:14.551] [TestEndToEndMessaging] [integration_test.go:578] Alice's message 1 has expected content
-[2025-03-03 00:30:14.551] [TestEndToEndMessaging] [integration_test.go:587] Charlie's message 0 has expected content
-[2025-03-03 00:30:14.551] [TestEndToEndMessaging] [integration_test.go:592] Verifying message encryption
-[2025-03-03 00:30:14.551] [TestEndToEndMessaging] [integration_test.go:606] Block 1, message 0: content is a valid hex string
-[2025-03-03 00:30:14.551] [TestEndToEndMessaging] [integration_test.go:606] Block 2, message 0: content is a valid hex string
-[2025-03-03 00:30:14.551] [TestEndToEndMessaging] [integration_test.go:606] Block 3, message 0: content is a valid hex string
-[2025-03-03 00:30:14.551] [TestEndToEndMessaging] [integration_test.go:606] Block 4, message 0: content is a valid hex string
-[2025-03-03 00:30:14.551] [TestEndToEndMessaging] [integration_test.go:606] Block 5, message 0: content is a valid hex string
-[2025-03-03 00:30:14.551] [TestEndToEndMessaging] [integration_test.go:619] End-to-end messaging test completed successfully
+[2026-05-14 18:21:36.350] [TestEndToEndMessaging] [integration_test.go:238] Starting end-to-end messaging test
+[2026-05-14 18:21:36.350] [TestEndToEndMessaging] [integration_test.go:241] Created blockchain instance
+[2026-05-14 18:21:36.350] [TestEndToEndMessaging] [integration_test.go:245] Generated encryption key
+[2026-05-14 18:21:36.350] [TestEndToEndMessaging] [integration_test.go:259] Adding 5 messages to blockchain
+[2026-05-14 18:21:36.391] [TestEndToEndMessaging] [integration_test.go:263] Added message 0: Alice -> Bob
+[2026-05-14 18:21:36.637] [TestEndToEndMessaging] [integration_test.go:263] Added message 1: Bob -> Alice
+[2026-05-14 18:21:36.638] [TestEndToEndMessaging] [integration_test.go:263] Added message 2: Alice -> Bob
+[2026-05-14 18:21:36.887] [TestEndToEndMessaging] [integration_test.go:263] Added message 3: Charlie -> Alice
+[2026-05-14 18:21:37.019] [TestEndToEndMessaging] [integration_test.go:263] Added message 4: Alice -> Charlie
+[2026-05-14 18:21:37.019] [TestEndToEndMessaging] [integration_test.go:269] Blockchain contains 6 blocks (including genesis block)
+[2026-05-14 18:21:37.019] [TestEndToEndMessaging] [integration_test.go:273] Bob has 2 messages
+[2026-05-14 18:21:37.019] [TestEndToEndMessaging] [integration_test.go:277] Alice has 2 messages
+[2026-05-14 18:21:37.019] [TestEndToEndMessaging] [integration_test.go:281] Charlie has 1 messages
+[2026-05-14 18:21:37.019] [TestEndToEndMessaging] [integration_test.go:283] Verifying message contents
+[2026-05-14 18:21:37.019] [TestEndToEndMessaging] [integration_test.go:289] Bob's message 0 has expected content
+[2026-05-14 18:21:37.019] [TestEndToEndMessaging] [integration_test.go:289] Bob's message 1 has expected content
+[2026-05-14 18:21:37.019] [TestEndToEndMessaging] [integration_test.go:298] Alice's message 0 has expected content
+[2026-05-14 18:21:37.019] [TestEndToEndMessaging] [integration_test.go:298] Alice's message 1 has expected content
+[2026-05-14 18:21:37.019] [TestEndToEndMessaging] [integration_test.go:307] Charlie's message 0 has expected content
+[2026-05-14 18:21:37.019] [TestEndToEndMessaging] [integration_test.go:311] Verifying message encryption
+[2026-05-14 18:21:37.019] [TestEndToEndMessaging] [integration_test.go:324] Block 1, message 0: content is a valid hex string
+[2026-05-14 18:21:37.019] [TestEndToEndMessaging] [integration_test.go:324] Block 2, message 0: content is a valid hex string
+[2026-05-14 18:21:37.020] [TestEndToEndMessaging] [integration_test.go:324] Block 3, message 0: content is a valid hex string
+[2026-05-14 18:21:37.020] [TestEndToEndMessaging] [integration_test.go:324] Block 4, message 0: content is a valid hex string
+[2026-05-14 18:21:37.020] [TestEndToEndMessaging] [integration_test.go:324] Block 5, message 0: content is a valid hex string
+[2026-05-14 18:21:37.020] [TestEndToEndMessaging] [integration_test.go:336] End-to-end messaging test completed successfully

@@ -4,46 +4,63 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 )
 
-// EncryptMessage шифрует сообщение с использованием AES-CFB
+const nonceSize = 12
+
+// EncryptMessage шифрует сообщение с использованием AES-256-GCM
 func EncryptMessage(content string, key []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create cipher: %v", err)
 	}
-	plaintext := []byte(content)
-	ciphertext := make([]byte, aes.BlockSize+len(plaintext))
-	iv := ciphertext[:aes.BlockSize]
-	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
-		return nil, fmt.Errorf("failed to generate IV: %v", err)
+
+	aesGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GCM: %v", err)
 	}
-	stream := cipher.NewCFBEncrypter(block, iv)
-	stream.XORKeyStream(ciphertext[aes.BlockSize:], plaintext)
-	return ciphertext, nil
+
+	nonce := make([]byte, nonceSize)
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, fmt.Errorf("failed to generate nonce: %v", err)
+	}
+
+	return aesGCM.Seal(nonce, nonce, []byte(content), nil), nil
 }
 
-// DecryptMessage дешифрует сообщение с использованием AES-CFB
+// DecryptMessage дешифрует сообщение с использованием AES-256-GCM
 func DecryptMessage(ciphertext, key []byte) (string, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return "", fmt.Errorf("failed to create cipher: %v", err)
 	}
-	if len(ciphertext) < aes.BlockSize {
-		return "", fmt.Errorf("ciphertext too short: length %d", len(ciphertext))
+
+	aesGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", fmt.Errorf("failed to create GCM: %v", err)
 	}
-	iv := ciphertext[:aes.BlockSize]
-	ciphertext = ciphertext[aes.BlockSize:]
-	stream := cipher.NewCFBDecrypter(block, iv)
-	stream.XORKeyStream(ciphertext, ciphertext)
-	return string(ciphertext), nil
+
+	if len(ciphertext) < nonceSize {
+		return "", errors.New("ciphertext too short")
+	}
+
+	nonce := ciphertext[:nonceSize]
+	encrypted := ciphertext[nonceSize:]
+
+	plaintext, err := aesGCM.Open(nil, nonce, encrypted, nil)
+	if err != nil {
+		return "", fmt.Errorf("decryption failed: %v", err)
+	}
+
+	return string(plaintext), nil
 }
 
-// GenerateKey генерирует новый ключ шифрования
+// GenerateKey генерирует новый ключ шифрования для AES-256
 func GenerateKey() ([]byte, error) {
-	key := make([]byte, 32) // AES-256 требует 32-байтовый ключ
+	key := make([]byte, 32)
 	_, err := rand.Read(key)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate key: %v", err)

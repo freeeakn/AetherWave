@@ -1,9 +1,3 @@
-/**
- * AetherWave Web Interface
- * JavaScript для взаимодействия с API узлов блокчейн-сети
- */
-
-// Состояние приложения
 const state = {
     connected: false,
     nodeAddress: '',
@@ -11,7 +5,6 @@ const state = {
     username: '',
 };
 
-// DOM элементы
 const elements = {
     connectBtn: document.getElementById('connect-btn'),
     nodeAddress: document.getElementById('node-address'),
@@ -28,20 +21,23 @@ const elements = {
     peersList: document.getElementById('peers-list'),
 };
 
-// Установка обработчиков событий
+function escapeHTML(str) {
+    const div = document.createElement('div');
+    div.appendChild(document.createTextNode(str));
+    return div.innerHTML;
+}
+
 document.addEventListener('DOMContentLoaded', () => {
-    // Инициализация обработчиков
     elements.connectBtn.addEventListener('click', handleConnect);
     elements.sendForm.addEventListener('submit', handleSendMessage);
     elements.refreshMessages.addEventListener('click', fetchMessages);
     elements.refreshBlockchain.addEventListener('click', fetchBlockchainInfo);
     elements.refreshPeers.addEventListener('click', fetchPeers);
-    
-    // Проверка localStorage для автоматического подключения
+
     const savedNodeAddress = localStorage.getItem('nodeAddress');
     const savedEncryptionKey = localStorage.getItem('encryptionKey');
     const savedUsername = localStorage.getItem('username');
-    
+
     if (savedNodeAddress && savedEncryptionKey && savedUsername) {
         elements.nodeAddress.value = savedNodeAddress;
         elements.encryptionKey.value = savedEncryptionKey;
@@ -50,95 +46,86 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 });
 
-// Обработчик подключения к узлу
 async function handleConnect() {
     const nodeAddress = elements.nodeAddress.value.trim();
     const encryptionKey = elements.encryptionKey.value.trim();
     const username = elements.username.value.trim();
-    
+
     if (!nodeAddress) {
-        showAlert('Ошибка', 'Укажите адрес узла', 'danger');
+        showAlert('Error', 'Enter node address', 'danger');
         return;
     }
-    
+
     if (!username) {
-        showAlert('Ошибка', 'Укажите имя пользователя', 'danger');
+        showAlert('Error', 'Enter username', 'danger');
         return;
     }
-    
-    // Если ключ не указан, генерируем новый
+
     let key = encryptionKey;
     if (!encryptionKey) {
         try {
             key = await generateEncryptionKey();
             elements.encryptionKey.value = key;
-            showAlert('Информация', `Сгенерирован новый ключ шифрования: ${key}`, 'info');
+            showAlert('Info', `Generated encryption key`, 'info');
         } catch (error) {
-            showAlert('Ошибка', `Не удалось сгенерировать ключ: ${error.message}`, 'danger');
+            showAlert('Error', `Failed to generate key: ${error.message}`, 'danger');
             return;
         }
     }
-    
-    // Пробуем подключиться к узлу
+
     try {
         elements.connectBtn.disabled = true;
-        elements.connectBtn.textContent = 'Подключение...';
-        
-        // Сохраняем состояние приложения
+        elements.connectBtn.textContent = 'Connecting...';
+
         state.nodeAddress = nodeAddress;
         state.encryptionKey = key;
         state.username = username;
-        
-        // Сохраняем в localStorage
+
         localStorage.setItem('nodeAddress', nodeAddress);
         localStorage.setItem('encryptionKey', key);
         localStorage.setItem('username', username);
-        
-        // Получаем информацию о блокчейне для проверки подключения
+
         await fetchBlockchainInfo();
-        
-        // Если дошли до этой точки, значит, подключение успешно
+
         state.connected = true;
-        elements.connectBtn.textContent = 'Подключено';
+        elements.connectBtn.textContent = 'Connected';
         elements.connectBtn.classList.remove('btn-primary');
         elements.connectBtn.classList.add('btn-success');
-        
-        // Загружаем данные
+
         await Promise.all([
             fetchMessages(),
             fetchPeers()
         ]);
-        
-        showAlert('Успех', `Подключено к узлу ${nodeAddress}`, 'success');
+
+        showAlert('Success', `Connected to ${nodeAddress}`, 'success');
     } catch (error) {
-        showAlert('Ошибка подключения', error.message, 'danger');
-        elements.connectBtn.textContent = 'Подключиться';
+        showAlert('Connection error', error.message, 'danger');
+        elements.connectBtn.textContent = 'Connect';
         elements.connectBtn.disabled = false;
     }
 }
 
-// Обработчик отправки сообщения
 async function handleSendMessage(event) {
     event.preventDefault();
-    
+
     if (!state.connected) {
-        showAlert('Ошибка', 'Сначала подключитесь к узлу', 'warning');
+        showAlert('Error', 'Connect to a node first', 'warning');
         return;
     }
-    
+
     const recipient = elements.recipient.value.trim();
     const messageText = elements.message.value.trim();
-    
+
     if (!recipient || !messageText) {
-        showAlert('Ошибка', 'Заполните все поля формы', 'warning');
+        showAlert('Error', 'Fill all fields', 'warning');
         return;
     }
-    
+
     try {
         const submitBtn = elements.sendForm.querySelector('button[type="submit"]');
         submitBtn.disabled = true;
-        submitBtn.textContent = 'Отправка...';
-        
+        submitBtn.textContent = 'Sending...';
+
         const response = await fetch(`http://${state.nodeAddress}/api/message`, {
             method: 'POST',
             headers: {
@@ -151,217 +138,209 @@ async function handleSendMessage(event) {
                 key: state.encryptionKey
             })
         });
-        
+
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
-        
+
         const result = await response.json();
-        
-        // Очищаем форму
+
         elements.message.value = '';
-        
-        // Обновляем данные
+
         await Promise.all([
             fetchMessages(),
             fetchBlockchainInfo()
         ]);
-        
-        showAlert('Успех', 'Сообщение отправлено и добавлено в блокчейн', 'success');
+
+        showAlert('Success', 'Message sent and added to blockchain', 'success');
     } catch (error) {
-        showAlert('Ошибка отправки', error.message, 'danger');
+        showAlert('Send error', error.message, 'danger');
     } finally {
         const submitBtn = elements.sendForm.querySelector('button[type="submit"]');
         submitBtn.disabled = false;
-        submitBtn.textContent = 'Отправить';
+        submitBtn.textContent = 'Send';
     }
 }
 
-// Функция для получения сообщений
 async function fetchMessages() {
     if (!state.connected) {
-        showAlert('Ошибка', 'Сначала подключитесь к узлу', 'warning');
+        showAlert('Error', 'Connect to a node first', 'warning');
         return;
     }
-    
+
     try {
         elements.refreshMessages.disabled = true;
-        elements.messages.innerHTML = '<div class="text-center"><div class="spinner-border" role="status"><span class="visually-hidden">Загрузка...</span></div></div>';
-        
-        const response = await fetch(`http://${state.nodeAddress}/api/messages?username=${state.username}&key=${state.encryptionKey}`);
-        
+        elements.messages.innerHTML = '<div class="text-center"><div class="spinner-border" role="status"><span class="visually-hidden">Loading...</span></div></div>';
+
+        const response = await fetch(`http://${state.nodeAddress}/api/messages?username=${encodeURIComponent(state.username)}&key=${encodeURIComponent(state.encryptionKey)}`);
+
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
-        
+
         const messages = await response.json();
-        
-        // Обновляем UI
+
         if (messages.length === 0) {
-            elements.messages.innerHTML = '<div class="alert alert-info">У вас нет сообщений</div>';
+            elements.messages.innerHTML = '<div class="alert alert-info">No messages</div>';
         } else {
             elements.messages.innerHTML = '';
             messages.forEach(msg => {
-                const isOutgoing = msg.sender === state.username;
+                const isOutgoing = state.connected && msg.sender === state.username;
                 const messageEl = document.createElement('div');
                 messageEl.className = isOutgoing ? 'message-item outgoing' : 'message-item';
-                messageEl.innerHTML = `
-                    <div class="d-flex justify-content-between">
-                        <strong>${isOutgoing ? 'Вы → ' + msg.recipient : msg.sender}</strong>
-                        <small class="text-muted">${formatTimestamp(msg.timestamp)}</small>
-                    </div>
-                    <p class="mb-0">${msg.content}</p>
-                `;
+                messageEl.appendChild(buildMessageContent(msg, isOutgoing));
                 elements.messages.appendChild(messageEl);
             });
         }
     } catch (error) {
-        showAlert('Ошибка получения сообщений', error.message, 'danger');
-        elements.messages.innerHTML = '<div class="alert alert-danger">Не удалось загрузить сообщения</div>';
+        showAlert('Messages error', error.message, 'danger');
+        elements.messages.innerHTML = '<div class="alert alert-danger">Failed to load messages</div>';
     } finally {
         elements.refreshMessages.disabled = false;
     }
 }
 
-// Функция для получения информации о блокчейне
+function buildMessageContent(msg, isOutgoing) {
+    const container = document.createElement('div');
+    container.className = 'd-flex justify-content-between';
+
+    const sender = document.createElement('strong');
+    sender.textContent = isOutgoing ? `You -> ${msg.recipient}` : msg.sender;
+
+    const time = document.createElement('small');
+    time.className = 'text-muted';
+    time.textContent = formatTimestamp(msg.timestamp);
+
+    container.appendChild(sender);
+    container.appendChild(time);
+
+    const body = document.createElement('p');
+    body.className = 'mb-0';
+    body.textContent = msg.content;
+
+    const wrapper = document.createElement('div');
+    wrapper.appendChild(container);
+    wrapper.appendChild(body);
+
+    return wrapper;
+}
+
 async function fetchBlockchainInfo() {
     try {
         elements.refreshBlockchain.disabled = true;
-        elements.blockchainInfo.innerHTML = '<div class="text-center"><div class="spinner-border" role="status"><span class="visually-hidden">Загрузка...</span></div></div>';
-        
+        elements.blockchainInfo.innerHTML = '<div class="text-center"><div class="spinner-border" role="status"><span class="visually-hidden">Loading...</span></div></div>';
+
         const response = await fetch(`http://${state.nodeAddress}/api/blockchain`);
-        
+
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
-        
+
         const data = await response.json();
-        
-        // Обновляем UI
+
         elements.blockchainInfo.innerHTML = `
             <div class="row text-start">
                 <div class="col-md-4">
-                    <h5>Общая информация</h5>
-                    <p><strong>Количество блоков:</strong> ${data.blockCount}</p>
-                    <p><strong>Сложность:</strong> ${data.difficulty}</p>
-                    <p><strong>Всего сообщений:</strong> ${data.messageCount}</p>
+                    <h5>Overview</h5>
+                    <p><strong>Blocks:</strong> ${escapeHTML(String(data.blockCount))}</p>
+                    <p><strong>Difficulty:</strong> ${escapeHTML(String(data.difficulty))}</p>
+                    <p><strong>Messages:</strong> ${escapeHTML(String(data.messageCount))}</p>
                 </div>
                 <div class="col-md-8">
-                    <h5>Последний блок</h5>
-                    <p><strong>Индекс:</strong> ${data.lastBlock.index}</p>
-                    <p><strong>Хеш:</strong> <code>${data.lastBlock.hash}</code></p>
-                    <p><strong>Предыдущий хеш:</strong> <code>${data.lastBlock.prevHash}</code></p>
-                    <p><strong>Nonce:</strong> ${data.lastBlock.nonce}</p>
-                    <p><strong>Timestamp:</strong> ${formatTimestamp(data.lastBlock.timestamp)}</p>
-                    <p><strong>Сообщений в блоке:</strong> ${data.lastBlock.messageCount}</p>
+                    <h5>Last block</h5>
+                    <p><strong>Index:</strong> ${escapeHTML(String(data.lastBlock.index))}</p>
+                    <p><strong>Hash:</strong> <code>${escapeHTML(data.lastBlock.hash)}</code></p>
+                    <p><strong>Prev hash:</strong> <code>${escapeHTML(data.lastBlock.prevHash)}</code></p>
+                    <p><strong>Nonce:</strong> ${escapeHTML(String(data.lastBlock.nonce))}</p>
+                    <p><strong>Timestamp:</strong> ${escapeHTML(formatTimestamp(data.lastBlock.timestamp))}</p>
                 </div>
             </div>
         `;
     } catch (error) {
-        showAlert('Ошибка получения данных блокчейна', error.message, 'danger');
-        elements.blockchainInfo.innerHTML = '<div class="alert alert-danger">Не удалось загрузить информацию о блокчейне</div>';
+        showAlert('Blockchain error', error.message, 'danger');
+        elements.blockchainInfo.innerHTML = '<div class="alert alert-danger">Failed to load blockchain info</div>';
     } finally {
         elements.refreshBlockchain.disabled = false;
     }
 }
 
-// Функция для получения списка пиров
 async function fetchPeers() {
     if (!state.connected) {
-        showAlert('Ошибка', 'Сначала подключитесь к узлу', 'warning');
         return;
     }
-    
+
     try {
         elements.refreshPeers.disabled = true;
-        elements.peersList.innerHTML = '<div class="text-center"><div class="spinner-border" role="status"><span class="visually-hidden">Загрузка...</span></div></div>';
-        
+        elements.peersList.innerHTML = '<div class="text-center"><div class="spinner-border" role="status"><span class="visually-hidden">Loading...</span></div></div>';
+
         const response = await fetch(`http://${state.nodeAddress}/api/peers`);
-        
+
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
-        
+
         const peers = await response.json();
-        
-        // Обновляем UI
+
         if (peers.length === 0) {
-            elements.peersList.innerHTML = '<div class="alert alert-info">Нет активных пиров</div>';
+            elements.peersList.innerHTML = '<div class="alert alert-info">No peers</div>';
         } else {
-            elements.peersList.innerHTML = `
-                <div class="table-responsive">
-                    <table class="table table-striped">
-                        <thead>
-                            <tr>
-                                <th>Адрес</th>
-                                <th>Статус</th>
-                                <th>Последняя активность</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${peers.map(peer => `
-                                <tr>
-                                    <td>${peer.address}</td>
-                                    <td>
-                                        <span class="badge ${peer.active ? 'bg-success' : 'bg-danger'}">
-                                            ${peer.active ? 'Активен' : 'Неактивен'}
-                                        </span>
-                                    </td>
-                                    <td>${formatTimestamp(peer.lastSeen)}</td>
-                                </tr>
-                            `).join('')}
-                        </tbody>
-                    </table>
-                </div>
-            `;
+            let html = '<div class="table-responsive"><table class="table table-striped"><thead><tr><th>Address</th><th>Status</th><th>Last seen</th></tr></thead><tbody>';
+            for (const peer of peers) {
+                html += `<tr><td>${escapeHTML(peer.address)}</td><td><span class="badge ${peer.active ? 'bg-success' : 'bg-danger'}">${peer.active ? 'Active' : 'Inactive'}</span></td><td>${escapeHTML(formatTimestamp(peer.lastSeen))}</td></tr>`;
+            }
+            html += '</tbody></table></div>';
+            elements.peersList.innerHTML = html;
         }
     } catch (error) {
-        showAlert('Ошибка получения списка пиров', error.message, 'danger');
-        elements.peersList.innerHTML = '<div class="alert alert-danger">Не удалось загрузить список пиров</div>';
+        showAlert('Peers error', error.message, 'danger');
+        elements.peersList.innerHTML = '<div class="alert alert-danger">Failed to load peers</div>';
     } finally {
         elements.refreshPeers.disabled = false;
     }
 }
 
-// Вспомогательная функция для форматирования временной метки
 function formatTimestamp(timestamp) {
-    const date = new Date(timestamp * 1000);
-    return date.toLocaleString();
+    try {
+        const date = new Date(timestamp * 1000);
+        return date.toLocaleString();
+    } catch (e) {
+        return String(timestamp);
+    }
 }
 
-// Функция для генерации ключа шифрования
 async function generateEncryptionKey() {
-    // Генерируем 32 байта случайных данных
     const array = new Uint8Array(32);
     window.crypto.getRandomValues(array);
-    
-    // Преобразуем в hex-строку
     return Array.from(array)
         .map(b => b.toString(16).padStart(2, '0'))
         .join('');
 }
 
-// Функция для отображения оповещений
 function showAlert(title, message, type = 'info') {
-    const alertId = 'app-alert-' + Date.now();
-    const alertHtml = `
-        <div id="${alertId}" class="alert alert-${type} alert-dismissible fade show" role="alert">
-            <strong>${title}</strong> ${message}
-            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-        </div>
-    `;
-    
-    // Добавляем оповещение в верхнюю часть страницы
     const alertContainer = document.createElement('div');
     alertContainer.className = 'container mt-3';
-    alertContainer.innerHTML = alertHtml;
+
+    const alertDiv = document.createElement('div');
+    alertDiv.className = `alert alert-${type} alert-dismissible fade show`;
+    alertDiv.setAttribute('role', 'alert');
+
+    const strong = document.createElement('strong');
+    strong.textContent = title;
+    alertDiv.appendChild(strong);
+
+    alertDiv.appendChild(document.createTextNode(' ' + message));
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'btn-close';
+    closeBtn.setAttribute('data-bs-dismiss', 'alert');
+    closeBtn.setAttribute('aria-label', 'Close');
+    alertDiv.appendChild(closeBtn);
+
+    alertContainer.appendChild(alertDiv);
     document.body.insertBefore(alertContainer, document.body.firstChild);
-    
-    // Автоматически скрываем через 5 секунд
+
     setTimeout(() => {
-        const alertElement = document.getElementById(alertId);
-        if (alertElement) {
-            alertElement.remove();
-        }
+        alertContainer.remove();
     }, 5000);
-} 
+}

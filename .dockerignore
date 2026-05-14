@@ -1,0 +1,16 @@
+.git/
+.gitignore
+.gitattributes
+.github/
+.vscode/
+.idea/
+bin/
+coverage/
+test-logs/
+profiles/
+.pid/
+*.md
+AGENTS.md
+Makefile
+docker-compose*
+*.log
