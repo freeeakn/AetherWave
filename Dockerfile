@@ -1,4 +1,4 @@
-FROM golang:1.21-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
 
@@ -14,7 +14,9 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o /app/bin/aetherwave cmd/aetherwave/main.go
 
 # Финальный образ
-FROM alpine:latest
+FROM alpine:3.20
+
+RUN adduser -D -h /app aetherwave
 
 WORKDIR /app
 
@@ -22,10 +24,12 @@ WORKDIR /app
 COPY --from=builder /app/bin/aetherwave .
 
 # Создаем директории для данных
-RUN mkdir -p /app/data /app/logs
+RUN mkdir -p /app/data /app/logs && chown -R aetherwave:aetherwave /app
 
-# Открываем порт
-EXPOSE 3000
+USER aetherwave
+
+# Открываем порты
+EXPOSE 3000 8080
 
 # Запускаем приложение
 ENTRYPOINT ["/app/aetherwave"]

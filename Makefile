@@ -57,7 +57,7 @@ stop-network:
 
 lint:
 	@echo "Запуск линтера..."
-	go vet ./...
+	go vet ./cmd/... ./pkg/... ./sdk/... ./tests/... ./mobile/...
 	@if command -v golint > /dev/null; then \
 		golint ./...; \
 	else \
@@ -73,11 +73,11 @@ lint:
 profile:
 	@echo "Запуск профилирования производительности..."
 	mkdir -p profiles
-	go run scripts/profile_performance.go -type cpu -output profiles/cpu_profile.out -messages 1000 -duration 30
+	go run scripts/profile_performance.go -type cpu -output profiles/cpu_profile.out -messages 1000 -duration 30s
 	@echo "Профилирование CPU завершено. Результаты в profiles/cpu_profile.out"
 	go run scripts/profile_performance.go -type memory -output profiles/mem_profile.out -messages 1000
 	@echo "Профилирование памяти завершено. Результаты в profiles/mem_profile.out"
-	go run scripts/profile_performance.go -type block -output profiles/block_profile.out -blocks 10 -difficulty 3
+	go run scripts/profile_performance.go -type block -output profiles/block_profile.out -messages 10 -difficulty 3
 	@echo "Профилирование создания блоков завершено. Результаты в profiles/block_profile.out"
 
 dev-env:
@@ -103,12 +103,12 @@ docker-build:
 
 docker-run:
 	@echo "Запуск Docker-контейнеров..."
-	docker-compose up -d
+	docker compose up -d 2>/dev/null || docker-compose up -d
 	@echo "Docker-контейнеры запущены"
 
 docker-clean:
 	@echo "Остановка и удаление Docker-контейнеров..."
-	docker-compose down
+	docker compose down 2>/dev/null || docker-compose down
 	@echo "Docker-контейнеры остановлены и удалены"
 
 web:

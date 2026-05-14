@@ -196,10 +196,10 @@ func TestVerifyChain(t *testing.T) {
 		t.Errorf("Expected chain to be valid")
 	}
 
-	// Имитируем взлом, изменяя сообщение в первом блоке
+	// Имитируем взлом, изменяя сообщение в первом блоке без пересчёта хеша
 	tamperedChain := bc.GetChain()
 	tamperedChain[1].Messages[0].Content = "Tampered content"
-	tamperedChain[1].Hash = SimpleCalculateHash(tamperedChain[1])
+	// НЕ пересчитываем хеш — хеш блока теперь не соответствует содержимому
 
 	// Заменяем оригинальную цепочку взломанной
 	bc.Chain = tamperedChain
@@ -287,11 +287,17 @@ func TestUpdateChain(t *testing.T) {
 		t.Errorf("Expected UpdateChain to return false for a shorter chain")
 	}
 
-	// Попытка обновить с недействительной цепочкой должна не удаться
-	invalidChain := bc2.GetChain()
-	invalidChain[1].Hash = "invalid hash"
+	// Создаём более длинную недействительную цепочку (длиннее bc1, чтобы UpdateChain проверял хеши)
+	longerInvalidChain := bc2.GetChain()
+	badBlock := Block{
+		Index:     len(longerInvalidChain),
+		Timestamp: time.Now().Unix(),
+		PrevHash:  "invalid_prev_hash",
+	}
+	badBlock.Hash = SimpleCalculateHash(badBlock)
+	longerInvalidChain = append(longerInvalidChain, badBlock)
 
-	updated = bc1.UpdateChain(invalidChain)
+	updated = bc1.UpdateChain(longerInvalidChain)
 
 	if updated {
 		t.Errorf("Expected UpdateChain to return false for an invalid chain")

@@ -1,14 +1,17 @@
-FROM nginx:alpine
+FROM nginx:1.25-alpine
 
 WORKDIR /usr/share/nginx/html
 
 # Копируем файлы веб-интерфейса
 COPY . .
 
-# Настраиваем NGINX для работы с SPA
+# Настраиваем NGINX
 RUN echo 'server { \
     listen       80; \
     server_name  localhost; \
+    add_header X-Frame-Options "DENY" always; \
+    add_header X-Content-Type-Options "nosniff" always; \
+    add_header X-XSS-Protection "1; mode=block" always; \
     \
     location / { \
         root   /usr/share/nginx/html; \
@@ -16,14 +19,10 @@ RUN echo 'server { \
         try_files $uri $uri/ /index.html; \
     } \
     \
-    # Разрешаем CORS для API \
     location /api/ { \
-        proxy_pass http://node1:3000; \
+        proxy_pass http://node1:8080; \
         proxy_set_header Host $host; \
         proxy_set_header X-Real-IP $remote_addr; \
-        add_header Access-Control-Allow-Origin *; \
-        add_header Access-Control-Allow-Methods "GET, POST, OPTIONS"; \
-        add_header Access-Control-Allow-Headers "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range"; \
     } \
 }' > /etc/nginx/conf.d/default.conf
 

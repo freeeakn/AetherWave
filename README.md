@@ -190,21 +190,20 @@ This will open the web interface in your default browser.
 - `cmd/` - Executable files
     - `aetherwave/` - Main application entry point
 - `pkg/` - Core packages
-    - `blockchain/` - Blockchain implementation with caching
-    - `blockchain.go`: Main blockchain structure and methods
-    - `mining.go`: Block mining and proof-of-work
-    - `cache.go`: Caching layer for blockchain operations
+    - `blockchain/` - Blockchain implementation
     - `crypto/` - Cryptographic functions
     - `network/` - Network interaction
         - `node.go`: Node implementation for P2P communication
         - `discovery.go`: Automatic node discovery using mDNS
-    - `sdk/` - Software Development Kit
+    - `sdk/` - Software Development Kit (internal)
+- `sdk/` - External SDK for third-party integration
 - `mobile/` - Mobile integration examples
 - `web/` - Web interface
 - `tests/` - Integration tests
 - `scripts/` - Helper scripts
-- `profiles/` - Performance profiling results
-- `docker/` - Docker-related files
+- `Dockerfile` - Main application Docker image
+- `web/Dockerfile` - Web UI Docker image
+- `docker-compose.yml` - Multi-node orchestration
 
 ## 🤝 Contributing
 

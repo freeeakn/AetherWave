@@ -1,0 +1,114 @@
+=== RUN   TestNewBlockchain
+--- PASS: TestNewBlockchain (0.00s)
+=== RUN   TestSimpleCalculateHash
+--- PASS: TestSimpleCalculateHash (0.00s)
+=== RUN   TestSimpleMineBlock
+--- PASS: TestSimpleMineBlock (0.00s)
+=== RUN   TestAddMessage
+--- PASS: TestAddMessage (0.33s)
+=== RUN   TestReadMessages
+--- PASS: TestReadMessages (0.56s)
+=== RUN   TestVerifyChain
+--- PASS: TestVerifyChain (0.37s)
+=== RUN   TestGetLastBlock
+--- PASS: TestGetLastBlock (0.03s)
+=== RUN   TestGetChain
+--- PASS: TestGetChain (0.01s)
+=== RUN   TestUpdateChain
+--- PASS: TestUpdateChain (0.55s)
+PASS
+ok  	github.com/freeeakn/AetherWave/pkg/blockchain	(cached)
+=== RUN   TestEncryptDecrypt
+=== RUN   TestEncryptDecrypt/Empty_message
+=== RUN   TestEncryptDecrypt/Short_message
+=== RUN   TestEncryptDecrypt/Long_message
+=== RUN   TestEncryptDecrypt/Special_characters
+=== RUN   TestEncryptDecrypt/Non-English_characters
+--- PASS: TestEncryptDecrypt (0.00s)
+    --- PASS: TestEncryptDecrypt/Empty_message (0.00s)
+    --- PASS: TestEncryptDecrypt/Short_message (0.00s)
+    --- PASS: TestEncryptDecrypt/Long_message (0.00s)
+    --- PASS: TestEncryptDecrypt/Special_characters (0.00s)
+    --- PASS: TestEncryptDecrypt/Non-English_characters (0.00s)
+=== RUN   TestEncryptWithWrongKey
+--- PASS: TestEncryptWithWrongKey (0.00s)
+=== RUN   TestGenerateKey
+--- PASS: TestGenerateKey (0.00s)
+=== RUN   TestDecryptInvalidData
+=== RUN   TestDecryptInvalidData/Empty_data
+=== RUN   TestDecryptInvalidData/Too_short_data
+=== RUN   TestDecryptInvalidData/Random_data
+--- PASS: TestDecryptInvalidData (0.00s)
+    --- PASS: TestDecryptInvalidData/Empty_data (0.00s)
+    --- PASS: TestDecryptInvalidData/Too_short_data (0.00s)
+    --- PASS: TestDecryptInvalidData/Random_data (0.00s)
+PASS
+ok  	github.com/freeeakn/AetherWave/pkg/crypto	(cached)
+=== RUN   TestNewNode
+--- PASS: TestNewNode (0.00s)
+=== RUN   TestConnectToPeer
+Node 127.0.0.1:8080 connected to peer 192.168.1.1:8081
+Node 127.0.0.1:8080 requested chain from 192.168.1.1:8081
+--- PASS: TestConnectToPeer (0.00s)
+=== RUN   TestDisconnectPeer
+--- PASS: TestDisconnectPeer (0.00s)
+=== RUN   TestHandleConnection
+Node 127.0.0.1:8080 received message type ping from 192.168.1.1:8081
+--- PASS: TestHandleConnection (0.00s)
+=== RUN   TestBroadcastMessage
+Node 127.0.0.1:8080 sent new_block to 192.168.1.1:8081
+Node 127.0.0.1:8080 sent new_block to 192.168.1.2:8082
+Node 127.0.0.1:8080 completed broadcasting new_block
+--- PASS: TestBroadcastMessage (0.00s)
+=== RUN   TestRequestChain
+Node 127.0.0.1:8080 requested chain from 192.168.1.1:8081
+--- PASS: TestRequestChain (0.00s)
+=== RUN   TestSendChain
+Node 127.0.0.1:8080 sent chain (length 1) to 127.0.0.1:8081
+--- PASS: TestSendChain (0.00s)
+=== RUN   TestHandleChainResponse
+Node 127.0.0.1:8080 updated chain to length 3
+--- PASS: TestHandleChainResponse (0.27s)
+=== RUN   TestHandleNewBlock
+Node 127.0.0.1:8080 processing new block 1 (PrevHash: 3781238de27f5d19864749229a36d99a2e209aa08458176c448448b095204843, Expected: 3781238de27f5d19864749229a36d99a2e209aa08458176c448448b095204843)
+Node 127.0.0.1:8080 accepted new block 1
+Node 127.0.0.1:8080 has no peers to broadcast new_block to
+Node 127.0.0.1:8080 processing new block 2 (PrevHash: invalid_prev_hash, Expected: 00001c7c519d00916f065ceaf06ebd32f04cd7462e0b3c7d5d471eba20845011)
+Node 127.0.0.1:8080 out of sync for block 2 (index 2 vs 2, prevHash mismatch)
+--- PASS: TestHandleNewBlock (0.18s)
+=== RUN   TestSendPing
+--- PASS: TestSendPing (0.00s)
+=== RUN   TestSendPong
+--- PASS: TestSendPong (0.00s)
+PASS
+ok  	github.com/freeeakn/AetherWave/pkg/network	(cached)
+=== RUN   TestSetEncryptionKey_ValidHex
+--- PASS: TestSetEncryptionKey_ValidHex (0.00s)
+=== RUN   TestSetEncryptionKey_InvalidHex
+--- PASS: TestSetEncryptionKey_InvalidHex (0.00s)
+=== RUN   TestSetEncryptionKey_ShortKey
+--- PASS: TestSetEncryptionKey_ShortKey (0.00s)
+=== RUN   TestSetUsername
+--- PASS: TestSetUsername (0.00s)
+=== RUN   TestGenerateEncryptionKey
+--- PASS: TestGenerateEncryptionKey (0.00s)
+=== RUN   TestSendMessage_NoUsername
+--- PASS: TestSendMessage_NoUsername (0.00s)
+=== RUN   TestGetMessages_NoUsername
+--- PASS: TestGetMessages_NoUsername (0.00s)
+=== RUN   TestSendMessage_NoKey
+--- PASS: TestSendMessage_NoKey (0.00s)
+=== RUN   TestGetMessages_Integration
+--- PASS: TestGetMessages_Integration (0.00s)
+=== RUN   TestSendMessage_Integration
+--- PASS: TestSendMessage_Integration (0.00s)
+=== RUN   TestGetBlockchainInfo_Integration
+--- PASS: TestGetBlockchainInfo_Integration (0.00s)
+=== RUN   TestGetPeers_Integration
+--- PASS: TestGetPeers_Integration (0.00s)
+=== RUN   TestAddPeer_Integration
+--- PASS: TestAddPeer_Integration (0.00s)
+=== RUN   TestMakeRequest_RetriesOnNetworkError
+--- PASS: TestMakeRequest_RetriesOnNetworkError (0.00s)
+PASS
+ok  	github.com/freeeakn/AetherWave/pkg/sdk	(cached)

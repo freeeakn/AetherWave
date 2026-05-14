@@ -1,14 +1,20 @@
 package network
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/freeeakn/AetherWave/pkg/blockchain"
+	"github.com/freeeakn/AetherWave/pkg/crypto"
 )
+
+// ListenFn - функция для создания слушателя (экспортирована для замены в тестах)
+var ListenFn = net.Listen
 
 // PeerInfo содержит информацию о пире
 type PeerInfo struct {
@@ -30,25 +36,117 @@ type Node struct {
 	Peers          map[string]net.Conn
 	KnownPeers     map[string]PeerInfo
 	Blockchain     *blockchain.Blockchain
+	NetworkKey     []byte // опциональный ключ для шифрования P2P трафика
+	ChainFile      string // опциональный путь для сохранения блокчейна на диск
 	mutex          sync.RWMutex
 	bootstrapPeers []string
 	listener       net.Listener
 	shutdown       chan struct{}
+	shutdownOnce   sync.Once
 	isRunning      bool
+	isRunningMu    sync.Mutex
 	discovery      *MDNSDiscovery
 	useDiscovery   bool
+	lastPeerSave   time.Time // для rate-limiting сохранения
+}
+
+// recoverPanic используется в горутинах для предотвращения паники всего процесса
+func recoverPanic(context string) {
+	if r := recover(); r != nil {
+		fmt.Printf("PANIC recovered in %s: %v\n", context, r)
+	}
+}
+
+// encryptNetworkMessage шифрует всё сообщение, если установлен NetworkKey
+func (n *Node) encryptNetworkMessage(msg NetworkMessage) (NetworkMessage, error) {
+	if n.NetworkKey == nil {
+		return msg, nil
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return msg, fmt.Errorf("marshal error: %v", err)
+	}
+	encrypted, err := crypto.EncryptMessage(string(data), n.NetworkKey)
+	if err != nil {
+		return msg, fmt.Errorf("encryption error: %v", err)
+	}
+	return NetworkMessage{
+		Type:    "encrypted",
+		Payload: json.RawMessage(hex.EncodeToString(encrypted)),
+	}, nil
+}
+
+// decryptNetworkMessage расшифровывает сообщение, если это зашифрованный пакет
+func (n *Node) decryptNetworkMessage(msg NetworkMessage) (NetworkMessage, error) {
+	if n.NetworkKey == nil || msg.Type != "encrypted" {
+		return msg, nil
+	}
+	encrypted, err := hex.DecodeString(string(msg.Payload))
+	if err != nil {
+		return msg, fmt.Errorf("hex decode error: %v", err)
+	}
+	decrypted, err := crypto.DecryptMessage(encrypted, n.NetworkKey)
+	if err != nil {
+		return msg, fmt.Errorf("decryption error: %v", err)
+	}
+	var inner NetworkMessage
+	if err := json.Unmarshal([]byte(decrypted), &inner); err != nil {
+		return msg, fmt.Errorf("unmarshal error: %v", err)
+	}
+	return inner, nil
+}
+
+// sendMessage маршалит, опционально шифрует и записывает сообщение в соединение
+func (n *Node) sendMessage(conn net.Conn, msg NetworkMessage) error {
+	if n.NetworkKey != nil && msg.Type != "encrypted" {
+		var err error
+		msg, err = n.encryptNetworkMessage(msg)
+		if err != nil {
+			return fmt.Errorf("encryption error: %v", err)
+		}
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		tcpConn.SetWriteDeadline(time.Now().Add(WriteTimeout))
+	}
+	_, err = conn.Write(data)
+	return err
+}
+
+// saveChain сохраняет блокчейн на диск, если указан ChainFile
+func (n *Node) saveChain() {
+	if n.ChainFile == "" {
+		return
+	}
+	if time.Since(n.lastPeerSave) < ChainSaveInterval {
+		return
+	}
+	n.lastPeerSave = time.Now()
+	if err := n.Blockchain.SaveToFile(n.ChainFile); err != nil {
+		fmt.Printf("Node %s error saving chain: %v\n", n.Address, err)
+	}
 }
 
 // Константы для настройки сетевого взаимодействия
 const (
 	DialTimeout           = 5 * time.Second
 	WriteTimeout          = 2 * time.Second
+	ReadTimeout           = 30 * time.Second
 	PeerBroadcastInterval = 10 * time.Second
+	PeerBroadcastLimit    = 30
 	PeerProbeInterval     = 30 * time.Second
 	PeerTimeout           = 15 * time.Second
 	BroadcastRetryDelay   = 1 * time.Second
 	MaxBroadcastRetries   = 3
 	MaxFailedPings        = 3
+	MaxInactiveAge        = 10 * time.Minute
+	PruneInterval         = 5 * time.Minute
+	MaxPeers              = 100
+	ChainSaveInterval     = 10 * time.Second
 )
 
 // DialPeer - функция для установки соединения с пиром
@@ -72,16 +170,22 @@ func NewNode(address string, bc *blockchain.Blockchain, bootstrapPeers []string)
 
 // Start запускает узел и начинает прослушивание входящих соединений
 func (n *Node) Start() error {
+	n.isRunningMu.Lock()
 	if n.isRunning {
+		n.isRunningMu.Unlock()
 		return fmt.Errorf("node is already running")
 	}
+	n.isRunning = true
+	n.isRunningMu.Unlock()
 
-	ln, err := net.Listen("tcp", n.Address)
+	ln, err := ListenFn("tcp", n.Address)
 	if err != nil {
+		n.isRunningMu.Lock()
+		n.isRunning = false
+		n.isRunningMu.Unlock()
 		return fmt.Errorf("error starting node: %v", err)
 	}
 	n.listener = ln
-	n.isRunning = true
 
 	fmt.Printf("Node %s started, listening on %s\n", n.Address, n.Address)
 
@@ -100,6 +204,7 @@ func (n *Node) Start() error {
 	go n.bootstrapDiscovery()
 	go n.broadcastPeerList()
 	go n.probePeers()
+	go n.pruneKnownPeers()
 	go n.acceptConnections()
 
 	return nil
@@ -107,16 +212,22 @@ func (n *Node) Start() error {
 
 // Stop останавливает узел и закрывает все соединения
 func (n *Node) Stop() {
+	n.isRunningMu.Lock()
 	if !n.isRunning {
+		n.isRunningMu.Unlock()
 		return
 	}
+	n.isRunning = false
+	n.isRunningMu.Unlock()
 
-	close(n.shutdown)
+	n.shutdownOnce.Do(func() {
+		close(n.shutdown)
+	})
+
 	if n.listener != nil {
 		n.listener.Close()
 	}
 
-	// Останавливаем сервис обнаружения, если он запущен
 	if n.discovery != nil {
 		n.discovery.Stop()
 	}
@@ -128,12 +239,43 @@ func (n *Node) Stop() {
 		conn.Close()
 		delete(n.Peers, addr)
 	}
-	n.isRunning = false
+	for addr, info := range n.KnownPeers {
+		info.Active = false
+		n.KnownPeers[addr] = info
+	}
 	fmt.Printf("Node %s stopped\n", n.Address)
+}
+
+// pruneKnownPeers периодически удаляет давно неактивных пиров
+func (n *Node) pruneKnownPeers() {
+	defer recoverPanic("pruneKnownPeers")
+	ticker := time.NewTicker(PruneInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-n.shutdown:
+			return
+		case <-ticker.C:
+			n.mutex.Lock()
+			now := time.Now()
+			for addr, info := range n.KnownPeers {
+				if addr == n.Address {
+					continue
+				}
+				if !info.Active && now.Sub(info.LastSeen) > MaxInactiveAge {
+					delete(n.KnownPeers, addr)
+					fmt.Printf("Node %s pruned inactive peer %s\n", n.Address, addr)
+				}
+			}
+			n.mutex.Unlock()
+		}
+	}
 }
 
 // acceptConnections обрабатывает входящие соединения
 func (n *Node) acceptConnections() {
+	defer recoverPanic("acceptConnections")
 	for {
 		select {
 		case <-n.shutdown:
@@ -151,6 +293,10 @@ func (n *Node) acceptConnections() {
 				}
 			}
 			remoteAddr := conn.RemoteAddr().String()
+			n.mutex.Lock()
+			n.Peers[remoteAddr] = conn
+			n.KnownPeers[remoteAddr] = PeerInfo{Address: remoteAddr, LastSeen: time.Now(), Active: true}
+			n.mutex.Unlock()
 			fmt.Printf("Node %s accepted connection from %s\n", n.Address, remoteAddr)
 			go n.handleConnection(conn, remoteAddr)
 		}
@@ -159,6 +305,7 @@ func (n *Node) acceptConnections() {
 
 // bootstrapDiscovery подключается к начальным пирам
 func (n *Node) bootstrapDiscovery() {
+	defer recoverPanic("bootstrapDiscovery")
 	for _, peerAddr := range n.bootstrapPeers {
 		if peerAddr != n.Address {
 			n.ConnectToPeer(peerAddr)
@@ -199,45 +346,60 @@ func (n *Node) ConnectToPeer(peerAddress string) error {
 
 // handleConnection обрабатывает соединение с пиром
 func (n *Node) handleConnection(conn net.Conn, initialRemoteAddr string) {
+	defer recoverPanic("handleConnection")
 	defer conn.Close()
 	decoder := json.NewDecoder(conn)
 
-	// Начинаем с заполнителя; уточним его с адресом прослушивания
 	peerAddr := ""
 
 	for {
+		if tcpConn, ok := conn.(*net.TCPConn); ok {
+			tcpConn.SetReadDeadline(time.Now().Add(ReadTimeout))
+		}
+
 		var msg NetworkMessage
 		if err := decoder.Decode(&msg); err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				fmt.Printf("Node %s read timeout from %s\n", n.Address, initialRemoteAddr)
+				continue
+			}
 			if err.Error() != "EOF" {
 				fmt.Printf("Node %s error decoding message from %s: %v\n", n.Address, initialRemoteAddr, err)
-			}
-			if peerAddr != "" {
-				n.updatePeerStatus(peerAddr, false, true)
-				n.disconnectPeer(peerAddr)
 			}
 			return
 		}
 
-		// Используем peer_list для идентификации адреса прослушивания
+		// Расшифровываем сообщение, если нужно
+		decrypted, err := n.decryptNetworkMessage(msg)
+		if err != nil {
+			fmt.Printf("Node %s decrypt error from %s: %v\n", n.Address, initialRemoteAddr, err)
+			continue
+		}
+		msg = decrypted
+
 		if msg.Type == "peer_list" {
 			var peers []string
 			if err := json.Unmarshal(msg.Payload, &peers); err == nil {
 				for _, addr := range peers {
 					if addr != n.Address && !isEphemeralPort(addr) {
-						peerAddr = addr // Предполагаем, что это адрес прослушивания отправителя
 						n.mutex.Lock()
-						if _, exists := n.Peers[peerAddr]; !exists {
-							n.Peers[peerAddr] = conn
-							fmt.Printf("Node %s added %s to Peers from peer_list\n", n.Address, peerAddr)
+						if addr != initialRemoteAddr {
+							delete(n.Peers, initialRemoteAddr)
+							delete(n.KnownPeers, initialRemoteAddr)
 						}
+						if existing, exists := n.Peers[addr]; exists && existing != conn {
+							existing.Close()
+						}
+						n.Peers[addr] = conn
+						peerAddr = addr
 						n.mutex.Unlock()
+						fmt.Printf("Node %s identified peer %s from peer_list\n", n.Address, peerAddr)
 						break
 					}
 				}
 			}
 		}
 
-		// Используем начальный адрес, если еще не идентифицирован
 		if peerAddr == "" {
 			peerAddr = initialRemoteAddr
 		}
@@ -279,6 +441,7 @@ func (n *Node) handleConnection(conn net.Conn, initialRemoteAddr string) {
 
 // broadcastPeerList периодически рассылает список известных пиров
 func (n *Node) broadcastPeerList() {
+	defer recoverPanic("broadcastPeerList")
 	ticker := time.NewTicker(PeerBroadcastInterval)
 	defer ticker.Stop()
 
@@ -296,6 +459,11 @@ func (n *Node) broadcastPeerList() {
 			}
 			n.mutex.RUnlock()
 
+			// Ограничиваем количество пиров в рассылке для предотвращения amplification-атак
+			if len(activePeers) > PeerBroadcastLimit {
+				activePeers = activePeers[:PeerBroadcastLimit]
+			}
+
 			if len(activePeers) > 0 {
 				msg := NetworkMessage{
 					Type:    "peer_list",
@@ -303,12 +471,15 @@ func (n *Node) broadcastPeerList() {
 				}
 				n.broadcastMessage(msg)
 			}
+
+			n.saveChain()
 		}
 	}
 }
 
 // probePeers периодически проверяет доступность пиров
 func (n *Node) probePeers() {
+	defer recoverPanic("probePeers")
 	ticker := time.NewTicker(PeerProbeInterval)
 	defer ticker.Stop()
 
@@ -330,6 +501,7 @@ func (n *Node) probePeers() {
 				n.sendPing(addr)
 			}
 
+			var toDisconnect []string
 			n.mutex.Lock()
 			now := time.Now()
 			for addr, info := range n.KnownPeers {
@@ -343,17 +515,17 @@ func (n *Node) probePeers() {
 						Active:      info.Active,
 						FailedPings: info.FailedPings + 1,
 					}
-					fmt.Printf("Node %s recorded failed ping for %s (count: %d)\n", n.Address, addr, n.KnownPeers[addr].FailedPings)
 					if n.KnownPeers[addr].FailedPings >= MaxFailedPings {
-						fmt.Printf("Node %s marking peer %s as inactive after %d failed pings (last seen: %v)\n", n.Address, addr, MaxFailedPings, info.LastSeen)
 						n.KnownPeers[addr] = PeerInfo{Address: addr, LastSeen: info.LastSeen, Active: false, FailedPings: info.FailedPings}
-						n.mutex.Unlock()
-						n.disconnectPeer(addr)
-						n.mutex.Lock()
+						toDisconnect = append(toDisconnect, addr)
 					}
 				}
 			}
 			n.mutex.Unlock()
+
+			for _, addr := range toDisconnect {
+				n.disconnectPeer(addr)
+			}
 		}
 	}
 }
@@ -364,12 +536,6 @@ func (n *Node) sendPing(peerAddress string) {
 		Type:    "ping",
 		Payload: nil,
 	}
-	data, err := json.Marshal(msg)
-	if err != nil {
-		fmt.Printf("Node %s error marshaling ping: %v\n", n.Address, err)
-		return
-	}
-	data = append(data, '\n')
 
 	n.mutex.RLock()
 	conn, exists := n.Peers[peerAddress]
@@ -379,10 +545,7 @@ func (n *Node) sendPing(peerAddress string) {
 		return
 	}
 
-	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		tcpConn.SetWriteDeadline(time.Now().Add(WriteTimeout))
-	}
-	if _, err := conn.Write(data); err != nil {
+	if err := n.sendMessage(conn, msg); err != nil {
 		fmt.Printf("Node %s error sending ping to %s: %v\n", n.Address, peerAddress, err)
 		n.updatePeerStatus(peerAddress, false, true)
 		n.disconnectPeer(peerAddress)
@@ -395,28 +558,13 @@ func (n *Node) sendPong(conn net.Conn) {
 		Type:    "pong",
 		Payload: nil,
 	}
-	data, err := json.Marshal(msg)
-	if err != nil {
-		fmt.Printf("Node %s error marshaling pong: %v\n", n.Address, err)
-		return
+	if err := n.sendMessage(conn, msg); err != nil {
+		fmt.Printf("Node %s error writing to %s: %v\n", n.Address, conn.RemoteAddr(), err)
 	}
-	data = append(data, '\n')
-
-	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		tcpConn.SetWriteDeadline(time.Now().Add(WriteTimeout))
-	}
-	conn.Write(data)
 }
 
 // broadcastMessage рассылает сообщение всем пирам
 func (n *Node) broadcastMessage(msg NetworkMessage) {
-	data, err := json.Marshal(msg)
-	if err != nil {
-		fmt.Printf("Node %s error marshaling message: %v\n", n.Address, err)
-		return
-	}
-	data = append(data, '\n')
-
 	n.mutex.RLock()
 	peers := make(map[string]net.Conn, len(n.Peers))
 	for addr, conn := range n.Peers {
@@ -430,10 +578,7 @@ func (n *Node) broadcastMessage(msg NetworkMessage) {
 	}
 
 	for addr, conn := range peers {
-		if tcpConn, ok := conn.(*net.TCPConn); ok {
-			tcpConn.SetWriteDeadline(time.Now().Add(WriteTimeout))
-		}
-		if _, err := conn.Write(data); err != nil {
+		if err := n.sendMessage(conn, msg); err != nil {
 			fmt.Printf("Node %s error sending %s to %s: %v\n", n.Address, msg.Type, addr, err)
 			n.updatePeerStatus(addr, false, true)
 			n.disconnectPeer(addr)
@@ -446,15 +591,22 @@ func (n *Node) broadcastMessage(msg NetworkMessage) {
 	}
 }
 
-// disconnectPeer отключает пира
+// disconnectPeer отключает пира и помечает его неактивным
 func (n *Node) disconnectPeer(peerAddress string) {
 	n.mutex.Lock()
+	defer n.mutex.Unlock()
 	if conn, exists := n.Peers[peerAddress]; exists {
 		conn.Close()
 		delete(n.Peers, peerAddress)
 	}
-	n.mutex.Unlock()
+	if info, exists := n.KnownPeers[peerAddress]; exists {
+		info.Active = false
+		n.KnownPeers[peerAddress] = info
+	}
 }
+
+// peerConnectLimit ограничивает количество одновременных подключений к пирам
+var peerConnectLimit = make(chan struct{}, 10)
 
 // handlePeerList обрабатывает полученный список пиров
 func (n *Node) handlePeerList(peers []string) {
@@ -464,8 +616,24 @@ func (n *Node) handlePeerList(peers []string) {
 	for _, addr := range peers {
 		if _, _, err := net.SplitHostPort(addr); err == nil && !isEphemeralPort(addr) && addr != n.Address {
 			if _, exists := n.KnownPeers[addr]; !exists {
+				// Ограничение: не превышать MaxPeers известных пиров
+				if len(n.KnownPeers) >= MaxPeers {
+					continue
+				}
 				n.KnownPeers[addr] = PeerInfo{Address: addr, LastSeen: time.Now(), Active: false, FailedPings: 0}
-				go n.ConnectToPeer(addr)
+				select {
+				case peerConnectLimit <- struct{}{}:
+					go func(a string) {
+						defer recoverPanic("handlePeerList-connect")
+						defer func() { <-peerConnectLimit }()
+						n.ConnectToPeer(a)
+					}(addr)
+				default:
+					go func(a string) {
+						defer recoverPanic("handlePeerList-connect")
+						n.ConnectToPeer(a)
+					}(addr)
+				}
 			}
 		}
 	}
@@ -473,11 +641,11 @@ func (n *Node) handlePeerList(peers []string) {
 
 // isEphemeralPort проверяет, является ли порт эфемерным
 func isEphemeralPort(addr string) bool {
-	_, port, err := net.SplitHostPort(addr)
+	_, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
 		return false
 	}
-	p, err := net.LookupPort("tcp", port)
+	p, err := strconv.Atoi(portStr)
 	if err != nil {
 		return false
 	}
@@ -539,6 +707,7 @@ func (n *Node) handleNewBlock(block blockchain.Block) {
 		chain = append(chain, block)
 		if n.Blockchain.UpdateChain(chain) {
 			fmt.Printf("Node %s accepted new block %d\n", n.Address, block.Index)
+			n.saveChain()
 			go n.BroadcastBlockWithRetry(block)
 		}
 	} else {
@@ -568,13 +737,6 @@ func (n *Node) BroadcastBlockWithRetry(block blockchain.Block) {
 
 // broadcastMessageWithRetry рассылает сообщение с повторными попытками
 func (n *Node) broadcastMessageWithRetry(msg NetworkMessage, retries int) {
-	data, err := json.Marshal(msg)
-	if err != nil {
-		fmt.Printf("Node %s error marshaling message: %v\n", n.Address, err)
-		return
-	}
-	data = append(data, '\n')
-
 	n.mutex.RLock()
 	peers := make(map[string]net.Conn, len(n.Peers))
 	for addr, conn := range n.Peers {
@@ -593,10 +755,7 @@ func (n *Node) broadcastMessageWithRetry(msg NetworkMessage, retries int) {
 			if failedPeers[addr] {
 				continue
 			}
-			if tcpConn, ok := conn.(*net.TCPConn); ok {
-				tcpConn.SetWriteDeadline(time.Now().Add(WriteTimeout))
-			}
-			if _, err := conn.Write(data); err != nil {
+			if err := n.sendMessage(conn, msg); err != nil {
 				fmt.Printf("Node %s error sending %s to %s (attempt %d/%d): %v\n", n.Address, msg.Type, addr, attempt+1, retries+1, err)
 				failedPeers[addr] = true
 				if attempt == retries {
@@ -629,22 +788,19 @@ func (n *Node) requestChain(peerAddress string) {
 		Type:    "chain_request",
 		Payload: nil,
 	}
-	data, err := json.Marshal(msg)
-	if err != nil {
-		fmt.Printf("Node %s error marshaling chain request: %v\n", n.Address, err)
-		return
-	}
-	data = append(data, '\n')
 
 	n.mutex.RLock()
-	if conn, exists := n.Peers[peerAddress]; exists {
-		if tcpConn, ok := conn.(*net.TCPConn); ok {
-			tcpConn.SetWriteDeadline(time.Now().Add(WriteTimeout))
+	conn, connExists := n.Peers[peerAddress]
+	n.mutex.RUnlock()
+
+	if connExists {
+		if err := n.sendMessage(conn, msg); err != nil {
+			fmt.Printf("Node %s error sending chain request to %s: %v\n", n.Address, peerAddress, err)
+			n.disconnectPeer(peerAddress)
+			return
 		}
-		conn.Write(data)
 		fmt.Printf("Node %s requested chain from %s\n", n.Address, peerAddress)
 	}
-	n.mutex.RUnlock()
 }
 
 // requestChainFromPeers запрашивает цепочку блоков у всех пиров
@@ -669,16 +825,10 @@ func (n *Node) sendChain(conn net.Conn) {
 		Type:    "chain_response",
 		Payload: mustMarshal(chain),
 	}
-	data, err := json.Marshal(msg)
-	if err != nil {
-		fmt.Printf("Node %s error marshaling chain response: %v\n", n.Address, err)
+	if err := n.sendMessage(conn, msg); err != nil {
+		fmt.Printf("Node %s error sending chain to %s: %v\n", n.Address, conn.RemoteAddr(), err)
 		return
 	}
-	data = append(data, '\n')
-	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		tcpConn.SetWriteDeadline(time.Now().Add(WriteTimeout))
-	}
-	conn.Write(data)
 	fmt.Printf("Node %s sent chain (length %d) to %s\n", n.Address, len(chain), conn.RemoteAddr().String())
 }
 
@@ -686,6 +836,7 @@ func (n *Node) sendChain(conn net.Conn) {
 func (n *Node) handleChainResponse(chain []blockchain.Block) {
 	if n.Blockchain.UpdateChain(chain) {
 		fmt.Printf("Node %s updated chain to length %d\n", n.Address, len(chain))
+		n.saveChain()
 	} else {
 		fmt.Printf("Node %s rejected chain response: invalid chain or not longer than current\n", n.Address)
 	}
@@ -703,7 +854,7 @@ func (n *Node) GetPeers() []PeerInfo {
 	return peers
 }
 
-// mustMarshal маршалит данные и паникует при ошибке
+// mustMarshal маршалит данные и возвращает nil при ошибке
 func mustMarshal(v interface{}) json.RawMessage {
 	data, err := json.Marshal(v)
 	if err != nil {

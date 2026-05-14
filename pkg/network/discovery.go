@@ -31,6 +31,7 @@ type MDNSDiscovery struct {
 	mutex         sync.RWMutex
 	discoveredMap map[string]bool
 	shutdown      chan struct{}
+	shutdownOnce  sync.Once
 }
 
 // NewMDNSDiscovery создает новый экземпляр MDNSDiscovery
@@ -86,9 +87,11 @@ func (md *MDNSDiscovery) Start() error {
 	return nil
 }
 
-// Stop останавливает сервис mDNS
+// Stop останавливает сервис mDNS (идемпотентно)
 func (md *MDNSDiscovery) Stop() {
-	close(md.shutdown)
+	md.shutdownOnce.Do(func() {
+		close(md.shutdown)
+	})
 	if md.server != nil {
 		md.server.Shutdown()
 	}
@@ -97,6 +100,7 @@ func (md *MDNSDiscovery) Stop() {
 
 // discoverLoop периодически запускает обнаружение узлов
 func (md *MDNSDiscovery) discoverLoop() {
+	defer recoverPanic("discoverLoop")
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -117,26 +121,28 @@ func (md *MDNSDiscovery) discoverLoop() {
 func (md *MDNSDiscovery) discoverNodes() {
 	entries := make(chan *zeroconf.ServiceEntry)
 
-	// Обрабатываем найденные сервисы в отдельной горутине
-	go func(results <-chan *zeroconf.ServiceEntry) {
-		for entry := range results {
-			md.handleDiscoveredNode(entry)
-		}
-	}(entries)
-
-	// Создаем контекст с таймаутом
 	ctx, cancel := context.WithTimeout(context.Background(), DiscoveryTimeout)
 	defer cancel()
 
-	// Запускаем поиск сервисов
 	err := md.resolver.Browse(ctx, ServiceType, ServiceDomain, entries)
 	if err != nil {
+		close(entries)
 		fmt.Printf("Ошибка при поиске узлов: %v\n", err)
 		return
 	}
 
-	// Ждем завершения таймаута
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer recoverPanic("discoverNodes-entry")
+		defer wg.Done()
+		for entry := range entries {
+			md.handleDiscoveredNode(entry)
+		}
+	}()
+
 	<-ctx.Done()
+	wg.Wait()
 }
 
 // handleDiscoveredNode обрабатывает обнаруженный узел
@@ -154,9 +160,23 @@ func (md *MDNSDiscovery) handleDiscoveredNode(entry *zeroconf.ServiceEntry) {
 
 	nodeAddr := fmt.Sprintf("%s:%d", ipAddr, entry.Port)
 
-	// Проверяем, не является ли это текущим узлом
 	if nodeAddr == md.node.Address {
 		return
+	}
+
+	_, ourPortStr, _ := net.SplitHostPort(md.node.Address)
+	ourPort, _ := strconv.Atoi(ourPortStr)
+	if entry.Port == ourPort {
+		addrs, err := net.InterfaceAddrs()
+		if err == nil {
+			for _, a := range addrs {
+				if ipnet, ok := a.(*net.IPNet); ok {
+					if ipnet.IP.String() == ipAddr {
+						return
+					}
+				}
+			}
+		}
 	}
 
 	// Проверяем, не обнаружили ли мы уже этот узел
@@ -171,7 +191,10 @@ func (md *MDNSDiscovery) handleDiscoveredNode(entry *zeroconf.ServiceEntry) {
 	fmt.Printf("Обнаружен новый узел: %s\n", nodeAddr)
 
 	// Подключаемся к обнаруженному узлу
-	go md.node.ConnectToPeer(nodeAddr)
+	go func() {
+		defer recoverPanic("discovery-connect")
+		md.node.ConnectToPeer(nodeAddr)
+	}()
 }
 
 // GetDiscoveredNodes возвращает список обнаруженных узлов
