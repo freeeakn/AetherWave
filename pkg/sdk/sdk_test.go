@@ -43,7 +43,16 @@ func TestSetUsername(t *testing.T) {
 }
 
 func TestGenerateEncryptionKey(t *testing.T) {
-	c := NewClient(ClientOptions{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/generate-key" {
+			t.Fatalf("Expected /api/generate-key, got %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"key": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"})
+	}))
+	defer server.Close()
+
+	c := NewClient(ClientOptions{NodeURL: server.URL})
 	keyStr, err := c.GenerateEncryptionKey()
 	if err != nil {
 		t.Fatalf("Expected no error, got: %v", err)
@@ -86,8 +95,18 @@ func TestGetMessages_Integration(t *testing.T) {
 		if r.URL.Path != "/api/messages" {
 			t.Fatalf("Expected /api/messages, got %s", r.URL.Path)
 		}
-		if r.URL.Query().Get("username") != "Alice" {
-			t.Fatalf("Expected username=Alice, got %s", r.URL.Query().Get("username"))
+		if r.Method != http.MethodPost {
+			t.Fatalf("Expected POST, got %s", r.Method)
+		}
+		var body struct {
+			Username string `json:"username"`
+			Key      string `json:"key"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Failed to decode body: %v", err)
+		}
+		if body.Username != "Alice" {
+			t.Fatalf("Expected username=Alice, got %s", body.Username)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode([]Message{

@@ -9,8 +9,6 @@ import (
 	"io"
 	"net/http"
 	"time"
-
-	"github.com/freeeakn/AetherWave/pkg/crypto"
 )
 
 type ClientOptions struct {
@@ -99,12 +97,20 @@ func (c *Client) GetUsername() string {
 }
 
 func (c *Client) GenerateEncryptionKey() (string, error) {
-	key, err := crypto.GenerateKey()
-	if err != nil {
-		return "", fmt.Errorf("error generating key: %v", err)
+	// Генерируем ключ через API ноды
+	var result struct {
+		Key string `json:"key"`
 	}
-	c.encryptionKey = key
-	return hex.EncodeToString(key), nil
+	err := c.makeRequest("GET", "/api/generate-key", nil, &result)
+	if err != nil {
+		return "", fmt.Errorf("error generating key via API: %v", err)
+	}
+	keyBytes, err := hex.DecodeString(result.Key)
+	if err != nil {
+		return "", fmt.Errorf("error decoding key: %v", err)
+	}
+	c.encryptionKey = keyBytes
+	return result.Key, nil
 }
 
 func (c *Client) GetMessages() ([]Message, error) {
@@ -112,10 +118,19 @@ func (c *Client) GetMessages() ([]Message, error) {
 		return nil, errors.New("username not set")
 	}
 
-	endpoint := fmt.Sprintf("/api/messages?username=%s", c.username)
-	var messages []Message
+	// Используем POST с телом запроса вместо GET с query params (ключ в заголовке/теле)
+	payload := struct {
+		Username string `json:"username"`
+		Key      string `json:"key,omitempty"`
+	}{
+		Username: c.username,
+	}
+	if c.encryptionKey != nil {
+		payload.Key = hex.EncodeToString(c.encryptionKey)
+	}
 
-	err := c.makeRequest("GET", endpoint, nil, &messages)
+	var messages []Message
+	err := c.makeRequest("POST", "/api/messages", payload, &messages)
 	if err != nil {
 		return nil, fmt.Errorf("error getting messages: %v", err)
 	}

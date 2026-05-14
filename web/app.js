@@ -172,7 +172,16 @@ async function fetchMessages() {
         elements.refreshMessages.disabled = true;
         elements.messages.innerHTML = '<div class="text-center"><div class="spinner-border" role="status"><span class="visually-hidden">Loading...</span></div></div>';
 
-        const response = await fetch(`http://${state.nodeAddress}/api/messages?username=${encodeURIComponent(state.username)}&key=${encodeURIComponent(state.encryptionKey)}`);
+        const response = await fetch(`http://${state.nodeAddress}/api/messages`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                username: state.username,
+                key: state.encryptionKey
+            })
+        });
 
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
