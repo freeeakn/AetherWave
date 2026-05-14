@@ -117,8 +117,18 @@ func TestSendMessage_Integration(t *testing.T) {
 
 func TestGetMessages_Integration(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("username") != "Alice" {
-			t.Fatalf("Expected username=Alice, got '%s'", r.URL.Query().Get("username"))
+		if r.Method != http.MethodPost {
+			t.Fatalf("Expected POST, got %s", r.Method)
+		}
+		var body struct {
+			Username string `json:"username"`
+			Key      string `json:"key"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Failed to decode body: %v", err)
+		}
+		if body.Username != "Alice" {
+			t.Fatalf("Expected username=Alice, got '%s'", body.Username)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode([]map[string]interface{}{
