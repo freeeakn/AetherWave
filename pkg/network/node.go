@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -38,6 +39,7 @@ type Node struct {
 	Blockchain     *blockchain.Blockchain
 	NetworkKey     []byte // опциональный ключ для шифрования P2P трафика
 	ChainFile      string // опциональный путь для сохранения блокчейна на диск
+	PeersFile      string // опциональный путь для сохранения пиров на диск
 	mutex          sync.RWMutex
 	bootstrapPeers []string
 	listener       net.Listener
@@ -48,6 +50,7 @@ type Node struct {
 	discovery      *MDNSDiscovery
 	useDiscovery   bool
 	lastPeerSave   time.Time // для rate-limiting сохранения
+	lastPeersSave  time.Time // для rate-limiting сохранения пиров
 }
 
 // recoverPanic используется в горутинах для предотвращения паники всего процесса
@@ -206,6 +209,7 @@ func (n *Node) Start() error {
 	go n.probePeers()
 	go n.pruneKnownPeers()
 	go n.acceptConnections()
+	go n.reconnectToKnownPeers()
 
 	return nil
 }
@@ -243,6 +247,12 @@ func (n *Node) Stop() {
 		info.Active = false
 		n.KnownPeers[addr] = info
 	}
+
+	// Сохраняем пиров при остановке
+	if n.PeersFile != "" {
+		n.SavePeersToFile(n.PeersFile)
+	}
+
 	fmt.Printf("Node %s stopped\n", n.Address)
 }
 
@@ -890,4 +900,110 @@ func (n *Node) GetDiscoveredNodes() []string {
 		return n.discovery.GetDiscoveredNodes()
 	}
 	return []string{}
+}
+
+// SavePeersToFile сохраняет список известных пиров в JSON файл
+func (n *Node) SavePeersToFile(path string) error {
+	n.mutex.RLock()
+	peers := make([]PeerInfo, 0, len(n.KnownPeers))
+	for _, info := range n.KnownPeers {
+		// Не сохраняем самого себя
+		if info.Address != n.Address {
+			peers = append(peers, info)
+		}
+	}
+	n.mutex.RUnlock()
+
+	data, err := json.MarshalIndent(peers, "", "  ")
+	if err != nil {
+		return fmt.Errorf("error marshaling peers: %v", err)
+	}
+
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return fmt.Errorf("error writing peers file: %v", err)
+	}
+
+	return nil
+}
+
+// LoadPeersFromFile загружает список пиров из JSON файла
+func (n *Node) LoadPeersFromFile(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // Файл не существует - не ошибка
+		}
+		return fmt.Errorf("error reading peers file: %v", err)
+	}
+
+	var peers []PeerInfo
+	if err := json.Unmarshal(data, &peers); err != nil {
+		return fmt.Errorf("error unmarshaling peers: %v", err)
+	}
+
+	n.mutex.Lock()
+	for _, peer := range peers {
+		// Не добавляем самого себя и не перезаписываем активных пиров
+		if peer.Address != n.Address {
+			if _, exists := n.KnownPeers[peer.Address]; !exists {
+				n.KnownPeers[peer.Address] = PeerInfo{
+					Address:     peer.Address,
+					LastSeen:    peer.LastSeen,
+					Active:      false, // Загруженные пиры неактивны до подключения
+					FailedPings: 0,
+				}
+			}
+		}
+	}
+	n.mutex.Unlock()
+
+	fmt.Printf("Loaded %d peers from %s\n", len(peers), path)
+	return nil
+}
+
+// savePeers сохраняет пиров на диск, если указан PeersFile
+func (n *Node) savePeers() {
+	if n.PeersFile == "" {
+		return
+	}
+	if time.Since(n.lastPeersSave) < ChainSaveInterval {
+		return
+	}
+	n.lastPeersSave = time.Now()
+	if err := n.SavePeersToFile(n.PeersFile); err != nil {
+		fmt.Printf("Node %s error saving peers: %v\n", n.Address, err)
+	}
+}
+
+// reconnectToKnownPeers периодически пытается переподключиться к неактивным пирам
+func (n *Node) reconnectToKnownPeers() {
+	defer recoverPanic("reconnectToKnownPeers")
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-n.shutdown:
+			return
+		case <-ticker.C:
+			n.mutex.RLock()
+			peersToReconnect := make([]string, 0)
+			for addr, info := range n.KnownPeers {
+				if addr != n.Address && !info.Active && info.FailedPings < MaxFailedPings {
+					peersToReconnect = append(peersToReconnect, addr)
+				}
+			}
+			n.mutex.RUnlock()
+
+			for _, addr := range peersToReconnect {
+				go func(peerAddr string) {
+					defer recoverPanic("reconnect-peer")
+					fmt.Printf("Node %s attempting to reconnect to %s\n", n.Address, peerAddr)
+					n.ConnectToPeer(peerAddr)
+				}(addr)
+			}
+
+			n.savePeers()
+		}
+	}
 }

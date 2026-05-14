@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -34,8 +35,14 @@ func main() {
 	name := flag.String("name", "User", "Your username")
 	keyStr := flag.String("key", "", "Shared encryption key (hex-encoded, 32 bytes); if empty, one will be generated")
 	chainFile := flag.String("chain-file", "", "Path to persist blockchain (JSON); empty means no persistence")
+	peersFile := flag.String("peers-file", "", "Path to persist known peers (JSON); empty means no persistence")
 	enableDiscovery := flag.Bool("discovery", false, "Enable automatic node discovery using mDNS")
 	showVersion := flag.Bool("version", false, "Show version information")
+	// TLS flags
+	tlsCert := flag.String("tls-cert", "", "Path to TLS certificate file (enables HTTPS)")
+	tlsKey := flag.String("tls-key", "", "Path to TLS key file (required with --tls-cert)")
+	// API Auth flags
+	apiToken := flag.String("api-token", "", "API authentication token (bearer token for /api/* endpoints)")
 	flag.Parse()
 
 	if *showVersion {
@@ -77,6 +84,14 @@ func main() {
 	node := network.NewNode(*address, bc, bootstrapPeers)
 	node.NetworkKey = key
 	node.ChainFile = *chainFile
+	node.PeersFile = *peersFile
+
+	// Загружаем пиров с диска, если указан peers-file
+	if *peersFile != "" {
+		if err := node.LoadPeersFromFile(*peersFile); err != nil {
+			fmt.Printf("Warning: failed to load peers from %s: %v\n", *peersFile, err)
+		}
+	}
 
 	if *enableDiscovery {
 		fmt.Println("mDNS discovery enabled")
@@ -100,7 +115,7 @@ func main() {
 	fmt.Println("Waiting for network stabilization (5 seconds)...")
 	time.Sleep(5 * time.Second)
 
-	httpServer := startAPIServer(*apiAddress, bc, node, key, name)
+	httpServer := startAPIServer(*apiAddress, bc, node, key, name, *tlsCert, *tlsKey, *apiToken)
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -159,7 +174,7 @@ func main() {
 	}
 }
 
-func startAPIServer(addr string, bc *blockchain.Blockchain, node *network.Node, key []byte, name *string) *http.Server {
+func startAPIServer(addr string, bc *blockchain.Blockchain, node *network.Node, key []byte, name *string, tlsCert, tlsKey, apiToken string) *http.Server {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/api/message", func(w http.ResponseWriter, r *http.Request) {
@@ -200,20 +215,32 @@ func startAPIServer(addr string, bc *blockchain.Blockchain, node *network.Node, 
 	})
 
 	mux.HandleFunc("/api/messages", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
+		if r.Method == http.MethodGet {
+			// DEPRECATED: GET with query params - moved to POST for security
+			http.Error(w, `{"error":"use POST /api/messages with JSON body instead of GET with query params"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		if r.Method != http.MethodPost {
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		username := r.URL.Query().Get("username")
-		keyStr := r.URL.Query().Get("key")
-		if username == "" {
+
+		var req struct {
+			Username string `json:"username"`
+			Key      string `json:"key"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+			return
+		}
+		if req.Username == "" {
 			http.Error(w, `{"error":"username required"}`, http.StatusBadRequest)
 			return
 		}
 		var msgKey []byte
-		if keyStr != "" {
+		if req.Key != "" {
 			var err error
-			msgKey, err = hex.DecodeString(keyStr)
+			msgKey, err = hex.DecodeString(req.Key)
 			if err != nil || len(msgKey) != 32 {
 				http.Error(w, `{"error":"invalid key"}`, http.StatusBadRequest)
 				return
@@ -221,7 +248,7 @@ func startAPIServer(addr string, bc *blockchain.Blockchain, node *network.Node, 
 		} else {
 			msgKey = key
 		}
-		msgs := bc.ReadMessages(username, msgKey)
+		msgs := bc.ReadMessages(req.Username, msgKey)
 		var result []map[string]interface{}
 		for _, m := range msgs {
 			result = append(result, map[string]interface{}{"message": m})
@@ -275,9 +302,70 @@ func startAPIServer(addr string, bc *blockchain.Blockchain, node *network.Node, 
 		json.NewEncoder(w).Encode(map[string]string{"key": hex.EncodeToString(newKey)})
 	})
 
+	// Health check endpoints
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
+	})
+
+	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+		// Проверяем, что нода запущена
+		if node == nil {
+			http.Error(w, `{"status":"not ready","error":"node not initialized"}`, http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ready"})
+	})
+
+	// Prometheus metrics endpoint
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		// Базовые метрики
+		chain := bc.GetChain()
+		msgCount := 0
+		for _, b := range chain {
+			msgCount += len(b.Messages)
+		}
+		peers := node.GetPeers()
+		activePeers := 0
+		for _, p := range peers {
+			if p.Active {
+				activePeers++
+			}
+		}
+
+		fmt.Fprintf(w, "# HELP aetherwave_blockchain_blocks_total Total number of blocks in blockchain\n")
+		fmt.Fprintf(w, "# TYPE aetherwave_blockchain_blocks_total gauge\n")
+		fmt.Fprintf(w, "aetherwave_blockchain_blocks_total %d\n", len(chain))
+
+		fmt.Fprintf(w, "# HELP aetherwave_blockchain_messages_total Total number of messages in blockchain\n")
+		fmt.Fprintf(w, "# TYPE aetherwave_blockchain_messages_total gauge\n")
+		fmt.Fprintf(w, "aetherwave_blockchain_messages_total %d\n", msgCount)
+
+		fmt.Fprintf(w, "# HELP aetherwave_peers_known_total Total number of known peers\n")
+		fmt.Fprintf(w, "# TYPE aetherwave_peers_known_total gauge\n")
+		fmt.Fprintf(w, "aetherwave_peers_known_total %d\n", len(peers))
+
+		fmt.Fprintf(w, "# HELP aetherwave_peers_active_total Number of active peers\n")
+		fmt.Fprintf(w, "# TYPE aetherwave_peers_active_total gauge\n")
+		fmt.Fprintf(w, "aetherwave_peers_active_total %d\n", activePeers)
+
+		fmt.Fprintf(w, "# HELP aetherwave_blockchain_difficulty Current mining difficulty\n")
+		fmt.Fprintf(w, "# TYPE aetherwave_blockchain_difficulty gauge\n")
+		fmt.Fprintf(w, "aetherwave_blockchain_difficulty %d\n", bc.Difficulty)
+	})
+
+	// Применяем middleware: CORS -> Auth -> Rate Limit -> Handler
+	handler := withCORS(mux)
+	if apiToken != "" {
+		handler = withAuth(handler, apiToken)
+	}
+	handler = withRateLimit(handler)
+
 	server := &http.Server{
 		Addr:    addr,
-		Handler: withCORS(mux),
+		Handler: handler,
 	}
 
 	go func() {
@@ -286,20 +374,126 @@ func startAPIServer(addr string, bc *blockchain.Blockchain, node *network.Node, 
 				log.Printf("PANIC in HTTP server: %v\n", r)
 			}
 		}()
-		fmt.Printf("HTTP API server starting on %s\n", addr)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("HTTP API server error: %v\n", err)
+
+		if tlsCert != "" && tlsKey != "" {
+			fmt.Printf("HTTPS API server starting on %s\n", addr)
+			if err := server.ListenAndServeTLS(tlsCert, tlsKey); err != nil && err != http.ErrServerClosed {
+				log.Printf("HTTPS API server error: %v\n", err)
+			}
+		} else {
+			fmt.Printf("HTTP API server starting on %s\n", addr)
+			if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Printf("HTTP API server error: %v\n", err)
+			}
 		}
 	}()
 
 	return server
 }
 
+// withAuth добавляет проверку Bearer токена для API endpoints
+func withAuth(handler http.Handler, apiToken string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Health checks не требуют авторизации
+		if r.URL.Path == "/health" || r.URL.Path == "/ready" {
+			handler.ServeHTTP(w, r)
+			return
+		}
+
+		// Проверяем Authorization header
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			http.Error(w, `{"error":"authorization required"}`, http.StatusUnauthorized)
+			return
+		}
+
+		// Ожидаем формат: Bearer <token>
+		parts := strings.SplitN(authHeader, " ", 2)
+		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
+			http.Error(w, `{"error":"invalid authorization format, expected Bearer token"}`, http.StatusUnauthorized)
+			return
+		}
+
+		if parts[1] != apiToken {
+			http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+			return
+		}
+
+		handler.ServeHTTP(w, r)
+	})
+}
+
+// rateLimiter реализует простой token bucket rate limiter
+var rateLimiter = struct {
+	mu       sync.Mutex
+	tokens   map[string]int
+	lastSeen map[string]time.Time
+}{
+	tokens:   make(map[string]int),
+	lastSeen: make(map[string]time.Time),
+}
+
+const (
+	maxRequestsPerMinute = 60
+	burstSize            = 10
+)
+
+// withRateLimit добавляет rate limiting по IP
+func withRateLimit(handler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip := r.RemoteAddr
+		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+			ip = strings.Split(fwd, ",")[0]
+		}
+
+		rateLimiter.mu.Lock()
+		now := time.Now()
+
+		// Очищаем старые записи (старше 1 минуты)
+		for k, v := range rateLimiter.lastSeen {
+			if now.Sub(v) > time.Minute {
+				delete(rateLimiter.tokens, k)
+				delete(rateLimiter.lastSeen, k)
+			}
+		}
+
+		// Пополняем токены
+		if last, exists := rateLimiter.lastSeen[ip]; exists {
+			elapsed := now.Sub(last)
+			tokensToAdd := int(elapsed.Seconds()) * maxRequestsPerMinute / 60
+			rateLimiter.tokens[ip] = min(rateLimiter.tokens[ip]+tokensToAdd, burstSize)
+		} else {
+			rateLimiter.tokens[ip] = burstSize
+		}
+
+		rateLimiter.lastSeen[ip] = now
+
+		// Проверяем и потребляем токен
+		if rateLimiter.tokens[ip] <= 0 {
+			rateLimiter.mu.Unlock()
+			w.Header().Set("Retry-After", "60")
+			http.Error(w, `{"error":"rate limit exceeded"}`, http.StatusTooManyRequests)
+			return
+		}
+		rateLimiter.tokens[ip]--
+		rateLimiter.mu.Unlock()
+
+		handler.ServeHTTP(w, r)
+	})
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func withCORS(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return

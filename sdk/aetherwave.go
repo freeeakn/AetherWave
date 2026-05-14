@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 )
@@ -164,13 +163,18 @@ func (c *Client) GetMessages() ([]Message, error) {
 		return nil, fmt.Errorf("username is not set")
 	}
 
-	// Создаем URL с параметрами
-	endpoint := fmt.Sprintf("/api/messages?username=%s&key=%s",
-		url.QueryEscape(c.options.Username),
-		url.QueryEscape(c.options.EncryptionKey))
+	// Создаем тело запроса (ключ больше не в URL)
+	data := map[string]string{
+		"username": c.options.Username,
+		"key":      c.options.EncryptionKey,
+	}
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode request: %v", err)
+	}
 
-	// Отправляем запрос
-	resp, err := c.doRequest("GET", endpoint, nil)
+	// Отправляем POST запрос
+	resp, err := c.doRequest("POST", "/api/messages", jsonData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get messages: %v", err)
 	}
